@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAM Dashboard</title>
+<style>
+  :root {
+    --bg: #404040;        /* page */
+    --frame: #5e5e5e;     /* row outline */
+    --used: #646464;      /* used RAM segment */
+    --ink: #ffffff;
+    --muted: #c8c8c8;
+    --row-h: clamp(2.75rem, 7.5vh, 4.75rem);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ink); }
+  body { font-family: "DejaVu Sans", Verdana, "Segoe UI", system-ui, sans-serif; }
+
+  main {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+    gap: 3rem clamp(2rem, 6vw, 7rem);
+    max-width: 96rem;
+    margin: 0 auto;
+    padding: clamp(1.5rem, 8vh, 7rem) clamp(1rem, 6vw, 8rem);
+  }
+  h2 {
+    margin: 0 0 0.6rem;
+    text-align: center;
+    font-weight: 400;
+    font-size: clamp(2rem, 4.5vw, 4rem);
+  }
+  ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+
+  .row {
+    position: relative;
+    display: flex;
+    gap: 2px;                       /* surface gap between free and used */
+    height: var(--row-h);
+    padding: 2px;
+    border: 3px solid var(--frame);
+    border-radius: 3px;
+    outline-offset: 2px;
+  }
+  .row:hover, .row:focus-visible { border-color: #8a8a8a; }
+  .free, .used { flex: 0 1 auto; min-width: 0; }
+  .free { background: var(--c); border-radius: 2px; }
+  .used { background: var(--used); border-radius: 0 2px 2px 0; }
+  .label {
+    position: absolute;
+    left: 0.9rem;
+    top: 50%;
+    transform: translateY(-50%);
+    max-width: calc(100% - 1.8rem);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    pointer-events: none;
+    font-size: calc(var(--row-h) * 0.5);
+    line-height: 1;
+    /* Readable on the colored bar and on the grey it may overflow onto. */
+    color: var(--label);
+    text-shadow: 0 0 1px var(--halo), 0 0 2px var(--halo), 0 0 3px var(--halo);
+  }
+
+  .status { grid-column: 1 / -1; text-align: center; color: var(--muted); margin: 0; }
+  .status:empty { display: none; }
+
+  #tip {
+    position: fixed;
+    z-index: 10;
+    pointer-events: none;
+    padding: 0.5rem 0.7rem;
+    border-radius: 4px;
+    background: #222;
+    border: 1px solid var(--frame);
+    color: var(--ink);
+    font-size: 0.875rem;
+    line-height: 1.4;
+    white-space: nowrap;
+    box-shadow: 0 4px 12px rgb(0 0 0 / 0.4);
+  }
+  #tip[hidden] { display: none; }
+  #tip .head { display: flex; align-items: center; gap: 0.4rem; font-weight: 600; }
+  #tip .swatch { width: 0.75rem; height: 0.75rem; border-radius: 2px; background: var(--c); }
+  #tip .meta { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <section aria-labelledby="users-h">
+    <h2 id="users-h">Users</h2>
+    <ol id="users"></ol>
+  </section>
+  <section aria-labelledby="hosts-h">
+    <h2 id="hosts-h">Hosts</h2>
+    <ol id="hosts"></ol>
+  </section>
+  <p class="status" id="status" role="status"></p>
+</main>
+<div id="tip" hidden></div>
+
+<script>
+"use strict";
+
+// Served at <base>/ (e.g. /api/); the API lives next to it.
+const BASE = location.pathname.replace(/\/?$/, "/");
+const REFRESH_MS = 5000;
+
+const GiB = 1024 ** 3;
+const fmt = (bytes) => (bytes / GiB).toFixed(bytes < 10 * GiB ? 1 : 0) + " GiB";
+const pct = (free, total) => Math.round((free / total) * 100) + "%";
+
+// Black or white label, whichever contrasts more with the bar color.
+function labelColors(hex) {
+  const lin = (c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  const [r, g, b] = [1, 3, 5].map((i) => lin(parseInt(hex.slice(i, i + 2), 16) / 255));
+  const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const dark = (L + 0.05) / 0.05 >= 1.05 / (L + 0.05);
+  return dark ? ["#000", "rgb(255 255 255 / 0.85)"] : ["#fff", "rgb(0 0 0 / 0.85)"];
+}
+
+function ago(iso) {
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+  return s < 60 ? `${s}s ago` : `${Math.round(s / 60)}m ago`;
+}
+
+// item: {label, color, free, total, tip: [head, ...lines]}; scale: largest total in the column.
+function row(item, scale) {
+  const li = document.createElement("li");
+  li.className = "row";
+  li.tabIndex = 0;
+  li.style.setProperty("--c", item.color);
+  const [label, halo] = labelColors(item.color);
+  li.style.setProperty("--label", label);
+  li.style.setProperty("--halo", halo);
+  li.setAttribute("aria-label", `${item.label}: ${fmt(item.free)} free of ${fmt(item.total)}`);
+
+  const used = item.total - item.free;
+  for (const [cls, bytes] of [["free", item.free], ["used", used]]) {
+    if (bytes <= 0) continue;
+    const seg = document.createElement("div");
+    seg.className = cls;
+    seg.style.width = (bytes / scale) * 100 + "%";
+    li.append(seg);
+  }
+  const span = document.createElement("span");
+  span.className = "label";
+  span.textContent = item.label;
+  li.append(span);
+
+  li.addEventListener("mouseenter", (e) => showTip(item, e));
+  li.addEventListener("mousemove", moveTip);
+  li.addEventListener("mouseleave", hideTip);
+  li.addEventListener("focus", () => showTip(item, li.getBoundingClientRect()));
+  li.addEventListener("blur", hideTip);
+  return li;
+}
+
+const tip = document.getElementById("tip");
+function showTip(item, at) {
+  tip.replaceChildren();
+  tip.style.setProperty("--c", item.color);
+  const head = document.createElement("div");
+  head.className = "head";
+  const sw = document.createElement("span");
+  sw.className = "swatch";
+  head.append(sw, item.tip[0]);
+  tip.append(head);
+  item.tip.slice(1).forEach((line, i) => {
+    const d = document.createElement("div");
+    if (i > 0) d.className = "meta";
+    d.textContent = line;
+    tip.append(d);
+  });
+  tip.hidden = false;
+  moveTip(at.clientX !== undefined ? at : { clientX: at.left + 16, clientY: at.bottom });
+}
+function moveTip(e) {
+  const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+  let x = e.clientX + pad, y = e.clientY + pad;
+  if (x + w > innerWidth - 4) x = e.clientX - w - pad;
+  if (y + h > innerHeight - 4) y = e.clientY - h - pad;
+  tip.style.left = Math.max(4, x) + "px";
+  tip.style.top = Math.max(4, y) + "px";
+}
+function hideTip() { tip.hidden = true; }
+
+function render(dash) {
+  const hosts = dash.hosts;
+  hideTip(); // the hovered row is about to be replaced
+
+  const users = new Map();
+  for (const h of hosts) {
+    const u = users.get(h.username) ?? { label: h.username, color: h.color, free: 0, total: 0, hosts: [] };
+    u.free += h.free_ram_bytes;
+    u.total += h.total_ram_bytes;
+    u.hosts.push(h.hostname);
+    users.set(h.username, u);
+  }
+  const userItems = [...users.values()]
+    .sort((a, b) => b.free - a.free || a.label.localeCompare(b.label))
+    .map((u) => ({
+      ...u,
+      tip: [
+        u.label,
+        `${fmt(u.free)} free of ${fmt(u.total)} (${pct(u.free, u.total)})`,
+        `${u.hosts.length} host${u.hosts.length === 1 ? "" : "s"}: ${u.hosts.join(", ")}`,
+      ],
+    }));
+
+  // The same machine can be reported by two users; name the user then.
+  const seen = new Map();
+  for (const h of hosts) seen.set(h.hostname, (seen.get(h.hostname) ?? 0) + 1);
+  const hostItems = hosts.map((h) => ({
+    label: seen.get(h.hostname) > 1 ? `${h.hostname} · ${h.username}` : h.hostname,
+    color: h.color,
+    free: h.free_ram_bytes,
+    total: h.total_ram_bytes,
+    tip: [
+      h.hostname,
+      `${fmt(h.free_ram_bytes)} free of ${fmt(h.total_ram_bytes)} (${pct(h.free_ram_bytes, h.total_ram_bytes)})`,
+      `user ${h.username} · last report ${ago(h.last_seen)}`,
+    ],
+  }));
+
+  const fill = (id, items) => {
+    const scale = Math.max(1, ...items.map((i) => i.total));
+    document.getElementById(id).replaceChildren(...items.map((i) => row(i, scale)));
+  };
+  fill("users", userItems);
+  fill("hosts", hostItems);
+  status(hosts.length ? "" : "No hosts are reporting right now.");
+}
+
+function status(text) { document.getElementById("status").textContent = text; }
+
+async function refresh() {
+  try {
+    const res = await fetch(BASE + "v1/dashboard", { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    render(await res.json());
+  } catch (e) {
+    status(`Can't reach the API (${e.message}), retrying…`);
+  } finally {
+    setTimeout(refresh, REFRESH_MS);
+  }
+}
+refresh();
+</script>
+</body>
+</html>

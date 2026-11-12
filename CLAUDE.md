@@ -13,7 +13,7 @@ There is no global Rust toolchain on this NixOS machine; wrap commands in
 ./run.sh                  # cargo run with DB at ~/.ramdashboard/data.sqlite; works from any cwd, args go to cargo
 ./restart.sh              # build, then (re)start detached on 63151; pid+log in ~/.ramdashboard/server.{pid,log}
 cargo run                 # serves on port 63151 (from Rocket.toml), writes ./wuppp.db
-cargo test                # 21 tests, ~2.5s (one test sleeps to exercise the sweeper)
+cargo test                # 26 tests, ~2.5s (one test sleeps to exercise the sweeper)
 cargo clippy --all-targets
 cargo fmt
 ```
@@ -28,7 +28,8 @@ cargo fmt
 | `src/main.rs` | `AppConfig` → validated `Settings`, `build()`/`build_with(figment)`, fairings (store/DB init, sweeper, CORS), JSON catcher, integration tests |
 | `src/api.rs` | Routes, custom responders with OpenAPI docs, `spec_info()` |
 | `src/auth.rs` | `WriteAuth` request guard (bearer token, constant-time compare) + its OpenAPI security scheme |
-| `src/history.rs` | SQLite `History` (`Mutex<rusqlite::Connection>`): record, query, prune, unit tests |
+| `src/history.rs` | SQLite `History` (`Mutex<rusqlite::Connection>`): record, query, prune, user colors (`users` table, random generation), unit tests |
+| `static/index.html` | The dashboard page (plain HTML/CSS/JS, no build step), embedded with `include_str!` and served at `/api/` |
 | `src/model.rs` | Request/response types with `JsonSchema`, validation, hostname normalization |
 | `src/store.rs` | In-memory `Store` (`RwLock<HashMap<(username, hostname), Host>>`), ranking, stale filtering/pruning, unit tests |
 | `run.sh` | Launcher: cds to the repo, sets `ROCKET_DATABASE_PATH=~/.ramdashboard/data.sqlite`, runs cargo (via nix-shell if cargo isn't on PATH) |
@@ -39,12 +40,13 @@ cargo fmt
 
 | Method | Path | Auth | Codes |
 |---|---|---|---|
-| PUT | `/api/v1/report/{username}/{hostname}` body `{free_ram_bytes, total_ram_bytes}` | token | 201 new/re-appeared, 200 updated, 401, 422 |
+| PUT | `/api/v1/report/{username}/{hostname}` body `{free_ram_bytes, total_ram_bytes, color?}` | token | 201 new/re-appeared, 200 updated, 401, 422 |
 | GET | `/api/v1/report/{username}/{hostname}` | | 200, 404, 422 |
 | DELETE | `/api/v1/report/{username}/{hostname}` | token | 204, 401, 404, 422 |
 | GET | `/api/v1/report/{username}/{hostname}/history?since=RFC3339&limit=N` | | 200, 422, 500 |
 | GET | `/api/v1/dashboard?limit=N` | | 200, 422 |
 | GET | `/api/health` | | 200 |
+| GET | `/api/` (and `/api`) | | 200, the dashboard page; not in the spec |
 
 Rules:
 - **Auth:** PUT and DELETE need `Authorization: Bearer <api_token>`. There is one global token, `tondorf.is.cool` (the user chose it), set in `Rocket.toml` / `ROCKET_API_TOKEN`. An empty token fails startup. Reads are open. Auth failures go through the catcher: `401 {"error":"unauthorized"}`.
@@ -59,6 +61,8 @@ Rules:
 - **History:** every accepted PUT is appended to the `reports` table in `database_path` (default `wuppp.db`, relative to the working directory). The history endpoint returns entries newest first; `limit` defaults to 100, range 1-10000. Unknown hosts give an empty list, not 404. History survives staleness, DELETE and restarts. The sweeper deletes rows older than `history_retention_days` (default 30, 0 = keep forever). If writing history fails, the PUT still succeeds and the error is logged.
 - **Live state is still in memory:** the dashboard is empty after a restart until hosts report again. It is not rebuilt from history.
 - **Path prefix:** everything (routes, `/api/openapi.json`, `/api/swagger-ui/`) is mounted under `api::BASE_PATH` (`/api`). Rocket has no global prefix setting, so `build_with` passes it as the base of `mount_endpoints_and_merged_docs!`. The spec's paths are relative to that base (`/v1/...`, `/health`) and `servers: [{url: "/api"}]` carries the prefix. Unprefixed paths give the JSON 404.
+- **User colors:** each user has one color (`#rrggbb`), stored in the `users` table of the same SQLite file and returned as `color` on every host. A report may send `"color": "#rrggbb"` (case-insensitive, stored lowercased; `null` = none) to set or change it, which also recolors the user's other hosts in memory. Without it, a new user gets a random color: random hue at fixed saturation 0.75 / lightness 0.55, picked from 12 random candidates as the one farthest in hue from existing users' colors. Colors are kept forever (not pruned) and survive restarts. If the color lookup fails, the report still succeeds with the requested or an unsaved random color.
+- **Frontend:** `static/index.html`, after `frontend-spec.png` (the mockup's colors were placeholders, its greys are kept: page `#404040`, row frame `#5e5e5e`, used segment `#646464`). Two columns, Users and Hosts, sorted by free RAM. Each row is a bar: user color = free RAM, grey = used RAM, the rest empty; bar length = total RAM relative to the largest total in that column. The Users column sums each user's hosts. A hostname reported by several users is labeled `host · user`. Label text is black or white depending on the bar color. Hover/focus shows a tooltip with GiB, % and last report. It polls `v1/dashboard` every 5 s relative to its own URL and builds all text with `textContent` (usernames are untrusted).
 - **CORS:** every response sends `Access-Control-Allow-Origin: *`.
 
 ## Conventions
@@ -82,15 +86,16 @@ Rules:
 - **`PRAGMA journal_mode`** returns a row, so it must go through `query_row`, not `execute`.
 - **Blocking DB calls:** SQLite calls run directly in the (sync) route handlers. That's fine at this scale (WAL, `synchronous = NORMAL`). The sweeper's prune uses `spawn_blocking`.
 - **Config lookup:** `Rocket.toml` is found by searching the working directory and its parents. When started from elsewhere, the port falls back to 8000, but the token and DB path keep their code defaults. Use `ROCKET_PORT` or `ROCKET_CONFIG`.
+- **Screenshotting the frontend:** `nix-shell -p chromium dejavu_fonts`, but headless Chromium renders no text at all unless `FONTCONFIG_FILE` points to a fonts.conf with a `<dir>` for the DejaVu store path. Use a throwaway instance (`ROCKET_PORT=63999 ROCKET_DATABASE_PATH=/some/tmp.sqlite target/debug/ram-dashboard`) so demo users don't get colors in the real DB.
 - **Bind address:** `Rocket.toml` sets `address = "127.0.0.1"` on purpose: a reverse proxy in front forwards public traffic. Don't bind to 0.0.0.0.
 
 ## Current state
 
-- **Features:** all of the above is implemented, tested (21 passing) and clippy-clean.
+- **Features:** all of the above is implemented, tested (26 passing) and clippy-clean.
 - **Server copy:** the repo is copied to `y7v.de:~/wuppp`. That server has git but **no Rust toolchain**, so the service isn't built or running there yet.
 
 ## Roadmap / open items
 
 1. **Deploy to y7v.de:** install rustup there, or cross-copy a release binary. Keep `address = "127.0.0.1"` behind the reverse proxy, put `wuppp.db` somewhere persistent (`database_path`). Optionally add a systemd unit.
-2. **Restrict CORS** to the frontend's origin instead of `*`.
+2. **Restrict CORS:** the bundled frontend is same-origin and doesn't need it; `*` only matters for other frontends.
 3. **Spec polish:** a hostname `pattern` and `limit` minimum 1 would need post-processing of the generated spec.

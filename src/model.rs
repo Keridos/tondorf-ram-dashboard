@@ -16,12 +16,19 @@ pub struct HostReport {
     /// Total RAM in bytes (at most 2^63-1).
     #[schemars(range(min = 1))]
     pub total_ram_bytes: u64,
+    /// Optional dashboard color for the user, `#rrggbb`. Sets (or changes) the
+    /// user's color for all of their hosts. Without it, a user gets a random
+    /// color on their first report, which is kept from then on.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^#[0-9A-Fa-f]{6}$"))]
+    pub color: Option<String>,
 }
 
 fn example_report() -> Value {
     json!({
         "free_ram_bytes": 8_589_934_592u64,
         "total_ram_bytes": 17_179_869_184u64,
+        "color": "#3d8bff",
     })
 }
 
@@ -36,6 +43,9 @@ impl HostReport {
         // SQLite integers are signed 64-bit.
         if self.total_ram_bytes > i64::MAX as u64 {
             return Err(format!("total_ram_bytes must be at most {}", i64::MAX));
+        }
+        if let Some(color) = &self.color {
+            normalize_color(color)?;
         }
         Ok(())
     }
@@ -67,6 +77,16 @@ pub fn normalize_hostname(raw: &str) -> Result<String, String> {
     Ok(raw.to_ascii_lowercase())
 }
 
+/// Validates a `#rrggbb` color and returns it lowercased.
+pub fn normalize_color(raw: &str) -> Result<String, String> {
+    match raw.strip_prefix('#') {
+        Some(hex) if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) => {
+            Ok(raw.to_ascii_lowercase())
+        }
+        _ => Err("color must be a hex code like #3d8bff".into()),
+    }
+}
+
 /// Latest stored state of a host.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Host {
@@ -75,6 +95,8 @@ pub struct Host {
     pub username: String,
     pub free_ram_bytes: u64,
     pub total_ram_bytes: u64,
+    /// The user's dashboard color, `#rrggbb` (same for all of a user's hosts).
+    pub color: String,
     /// Server time of the latest report.
     pub last_seen: DateTime<Utc>,
 }

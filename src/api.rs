@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use chrono::{SubsecRound, Utc};
 use rocket::http::Status;
-use rocket::response::{self, Responder, status::NoContent};
+use rocket::response::{self, Responder, content::RawHtml, status::NoContent};
 use rocket::serde::json::{self, Json};
 use rocket::{Request, State};
 use rocket_okapi::r#gen::OpenApiGenerator;
@@ -21,9 +21,10 @@ use serde::Serialize;
 use chrono::DateTime;
 
 use crate::auth::WriteAuth;
-use crate::history::History;
+use crate::history::{History, random_color};
 use crate::model::{
-    Dashboard, ErrorBody, Host, HostHistory, HostReport, normalize_hostname, normalize_username,
+    Dashboard, ErrorBody, Host, HostHistory, HostReport, normalize_color, normalize_hostname,
+    normalize_username,
 };
 use crate::store::Store;
 
@@ -211,6 +212,8 @@ fn not_found(username: &str, hostname: &str) -> ApiError {
 /// server time. Hostnames are 1-253 chars of `[A-Za-z0-9._-]`,
 /// case-insensitive. The username (percent-encoded if needed) must be
 /// non-empty after trimming and at most 256 bytes; it is case-sensitive.
+/// `color` (optional, `#rrggbb`) sets the user's dashboard color; a user
+/// without one gets a random color on their first report, stored for good.
 /// Every accepted report is also appended to the history.
 /// Requires the API token.
 #[openapi(tag = "Reporting")]
@@ -228,12 +231,32 @@ pub fn report_host(
         .map_err(|e| Invalid(format!("invalid body: {e}")))?
         .into_inner();
     report.validate().map_err(Invalid)?;
+    let requested = report
+        .color
+        .as_deref()
+        .map(normalize_color)
+        .transpose()
+        .map_err(Invalid)?;
+
+    // Like history, a database failure shouldn't block the report: fall back
+    // to the requested color, or a random one that isn't persisted.
+    let color = history
+        .user_color(&username, requested.as_deref())
+        .unwrap_or_else(|e| {
+            eprintln!("failed to look up color for '{username}': {e}");
+            requested.clone().unwrap_or_else(random_color)
+        });
+    if requested.is_some() {
+        // Keep the user's other hosts in sync with the new color.
+        store.recolor(&username, &color);
+    }
 
     let host = Host {
         hostname,
         username,
         free_ram_bytes: report.free_ram_bytes,
         total_ram_bytes: report.total_ram_bytes,
+        color,
         // Microsecond precision, matching what the history stores.
         last_seen: Utc::now().trunc_subsecs(6),
     };
@@ -337,8 +360,15 @@ pub fn dashboard(
 }
 
 // ---------------------------------------------------------------------------
-// Routes (mounted under /)
+// Routes (mounted under BASE_PATH)
 // ---------------------------------------------------------------------------
+
+/// The dashboard page (not part of the API spec). It fetches `v1/dashboard`
+/// relative to its own URL, so it must be served at `BASE_PATH/`.
+#[get("/")]
+pub fn frontend() -> RawHtml<&'static str> {
+    RawHtml(include_str!("../static/index.html"))
+}
 
 #[derive(Serialize, JsonSchema)]
 pub struct Health {

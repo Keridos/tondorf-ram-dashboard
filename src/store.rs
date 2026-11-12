@@ -66,6 +66,14 @@ impl Store {
             .is_some_and(|h| self.is_fresh(&h, now))
     }
 
+    /// Sets the color on every stored host of `username`.
+    pub fn recolor(&self, username: &str, color: &str) {
+        let mut hosts = self.hosts.write().unwrap();
+        for host in hosts.values_mut().filter(|h| h.username == username) {
+            host.color = color.to_owned();
+        }
+    }
+
     /// Deletes all stale hosts. Returns how many were removed.
     pub fn prune(&self, now: DateTime<Utc>) -> usize {
         let mut hosts = self.hosts.write().unwrap();
@@ -129,6 +137,7 @@ mod tests {
             username: "u".into(),
             free_ram_bytes: free,
             total_ram_bytes: 100,
+            color: "#000000".into(),
             last_seen,
         }
     }
@@ -196,5 +205,10 @@ mod tests {
         assert!(store.get("alice", "h", t0).is_none());
         assert!(store.get("bob", "h", t0).is_some());
         assert!(store.get("dave", "h", t0).is_none());
+
+        store.upsert(host("h2", 5, t0));
+        store.recolor("u", "#abcdef");
+        assert_eq!(store.get("u", "h2", t0).unwrap().color, "#abcdef");
+        assert_eq!(store.get("bob", "h", t0).unwrap().color, "#000000");
     }
 }

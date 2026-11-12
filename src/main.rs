@@ -123,6 +123,8 @@ fn build_with(figment: Figment) -> Rocket<Build> {
     };
 
     rocket
+        // The dashboard page at /api/ (outside the spec).
+        .mount(format!("{}/", api::BASE_PATH), routes![api::frontend])
         .mount(
             format!("{}/swagger-ui/", api::BASE_PATH),
             make_swagger_ui(&SwaggerUIConfig {
@@ -615,6 +617,77 @@ mod tests {
         }
         let spec: Value = c.get("/api/openapi.json").dispatch().into_json().unwrap();
         assert_eq!(spec["servers"][0]["url"], "/api");
+    }
+
+    #[test]
+    fn frontend_is_served() {
+        let c = client();
+        for path in ["/api/", "/api"] {
+            let res = c.get(path).dispatch();
+            assert_eq!(res.status(), Status::Ok, "{path}");
+            assert_eq!(res.content_type(), Some(ContentType::HTML));
+            assert!(res.into_string().unwrap().contains("v1/dashboard"));
+        }
+        assert_eq!(c.get("/").dispatch().status(), Status::NotFound);
+        let spec: Value = c.get("/api/openapi.json").dispatch().into_json().unwrap();
+        assert!(
+            spec["paths"]["/"].is_null(),
+            "frontend leaked into the spec"
+        );
+    }
+
+    #[test]
+    fn user_colors_are_random_then_kept_or_set() {
+        let c = client();
+        let put = |user: &str, host: &str, body: &str| {
+            c.put(format!("/api/v1/report/{user}/{host}"))
+                .header(ContentType::JSON)
+                .header(auth(TOKEN))
+                .body(body)
+                .dispatch()
+        };
+        let plain = r#"{"free_ram_bytes":1,"total_ram_bytes":2}"#;
+        let color_of = |user: &str, host: &str| -> String {
+            let v: Value = c
+                .get(format!("/api/v1/report/{user}/{host}"))
+                .dispatch()
+                .into_json()
+                .unwrap();
+            v["color"].as_str().unwrap().to_owned()
+        };
+
+        // A random color on the first report, kept by later ones and other hosts.
+        let res: Value = put("alice", "a1", plain).into_json().unwrap();
+        let random = res["color"].as_str().unwrap().to_owned();
+        assert!(crate::model::normalize_color(&random).is_ok(), "{random}");
+        put("alice", "a1", plain);
+        put("alice", "a2", plain);
+        assert_eq!(color_of("alice", "a1"), random);
+        assert_eq!(color_of("alice", "a2"), random);
+
+        // An explicit color is stored (lowercased) and repaints all hosts of the user.
+        let with = |color: &str| {
+            format!(r#"{{"free_ram_bytes":1,"total_ram_bytes":2,"color":"{color}"}}"#)
+        };
+        assert_eq!(put("alice", "a1", &with("#AbCdEf")).status(), Status::Ok);
+        assert_eq!(color_of("alice", "a1"), "#abcdef");
+        assert_eq!(color_of("alice", "a2"), "#abcdef");
+        put("alice", "a2", plain);
+        assert_eq!(color_of("alice", "a2"), "#abcdef", "kept without color");
+
+        let dash: Value = c.get("/api/v1/dashboard").dispatch().into_json().unwrap();
+        assert_eq!(dash["hosts"][0]["color"], "#abcdef");
+
+        for bad in ["red", "#abc", "#abcdeg", "abcdef0", "#abcdef0"] {
+            let res = put("bob", "b", &with(bad));
+            assert_eq!(res.status(), Status::UnprocessableEntity, "{bad}");
+        }
+        let res = put(
+            "bob",
+            "b",
+            r#"{"free_ram_bytes":1,"total_ram_bytes":2,"color":null}"#,
+        );
+        assert_eq!(res.status(), Status::Created, "null means no color");
     }
 
     #[test]
