@@ -59,9 +59,21 @@
     pointer-events: none;
     font-size: calc(var(--row-h) * 0.5);
     line-height: 1;
-    /* Readable on the colored bar and on the grey it may overflow onto. */
-    color: var(--label);
-    text-shadow: 0 0 1px var(--halo), 0 0 2px var(--halo), 0 0 3px var(--halo);
+    /* White with a black outline: readable on any bar color and on the grey
+       it may overflow onto. Eight offset shadows plus a soft one form a smooth
+       ~0.065em ring (text-stroke would draw spikes at sharp corners). */
+    --o: 0.065em;
+    color: #fff;
+    text-shadow:
+      calc(-1 * var(--o)) calc(-1 * var(--o)) 0 #000,
+      0 calc(-1 * var(--o)) 0 #000,
+      var(--o) calc(-1 * var(--o)) 0 #000,
+      var(--o) 0 0 #000,
+      var(--o) var(--o) 0 #000,
+      0 var(--o) 0 #000,
+      calc(-1 * var(--o)) var(--o) 0 #000,
+      calc(-1 * var(--o)) 0 0 #000,
+      0 0 calc(var(--o) * 1.5) #000;
   }
 
   .status { grid-column: 1 / -1; text-align: center; color: var(--muted); margin: 0; }
@@ -117,15 +129,6 @@ const GiB = 1024 ** 3;
 const fmt = (bytes) => (bytes / GiB).toFixed(bytes < 10 * GiB ? 1 : 0) + " GiB";
 const pct = (free, total) => Math.round((free / total) * 100) + "%";
 
-// Black or white label, whichever contrasts more with the bar color.
-function labelColors(hex) {
-  const lin = (c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
-  const [r, g, b] = [1, 3, 5].map((i) => lin(parseInt(hex.slice(i, i + 2), 16) / 255));
-  const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  const dark = (L + 0.05) / 0.05 >= 1.05 / (L + 0.05);
-  return dark ? ["#000", "rgb(255 255 255 / 0.85)"] : ["#fff", "rgb(0 0 0 / 0.85)"];
-}
-
 function ago(iso) {
   const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
   return s < 60 ? `${s}s ago` : `${Math.round(s / 60)}m ago`;
@@ -137,9 +140,6 @@ function row(item, scale) {
   li.className = "row";
   li.tabIndex = 0;
   li.style.setProperty("--c", item.color);
-  const [label, halo] = labelColors(item.color);
-  li.style.setProperty("--label", label);
-  li.style.setProperty("--halo", halo);
   li.setAttribute("aria-label", `${item.label}: ${fmt(item.free)} free of ${fmt(item.total)}`);
 
   const used = item.total - item.free;
