@@ -5,13 +5,20 @@ use chrono::{DateTime, TimeDelta, Utc};
 
 use crate::model::{Dashboard, Host, RankedHost};
 
-/// In-memory store holding the latest report per hostname.
+/// In-memory store holding the latest report per (username, hostname).
 ///
 /// Hosts whose `last_seen` is older than `stale_after` are treated as gone:
 /// reads ignore them immediately, and `prune` deletes them from memory.
 pub struct Store {
-    hosts: RwLock<HashMap<String, Host>>,
+    hosts: RwLock<HashMap<Key, Host>>,
     stale_after: TimeDelta,
+}
+
+/// `(username, hostname)`: the same machine reported by two users is two entries.
+type Key = (String, String);
+
+fn key(username: &str, hostname: &str) -> Key {
+    (username.to_owned(), hostname.to_owned())
 }
 
 impl Store {
@@ -37,25 +44,25 @@ impl Store {
     pub fn upsert(&self, host: Host) -> bool {
         let now = host.last_seen;
         let mut hosts = self.hosts.write().unwrap();
-        match hosts.insert(host.hostname.clone(), host) {
+        match hosts.insert(key(&host.username, &host.hostname), host) {
             None => true,
             Some(prev) => !self.is_fresh(&prev, now),
         }
     }
 
-    pub fn get(&self, hostname: &str, now: DateTime<Utc>) -> Option<Host> {
+    pub fn get(&self, username: &str, hostname: &str, now: DateTime<Utc>) -> Option<Host> {
         let hosts = self.hosts.read().unwrap();
         hosts
-            .get(hostname)
+            .get(&key(username, hostname))
             .filter(|h| self.is_fresh(h, now))
             .cloned()
     }
 
     /// Removes a host. Returns `false` if it didn't exist or was already stale.
-    pub fn remove(&self, hostname: &str, now: DateTime<Utc>) -> bool {
+    pub fn remove(&self, username: &str, hostname: &str, now: DateTime<Utc>) -> bool {
         let mut hosts = self.hosts.write().unwrap();
         hosts
-            .remove(hostname)
+            .remove(&key(username, hostname))
             .is_some_and(|h| self.is_fresh(&h, now))
     }
 
@@ -67,7 +74,7 @@ impl Store {
         before - hosts.len()
     }
 
-    /// Fresh hosts sorted by free RAM descending, ties broken by hostname ascending.
+    /// Fresh hosts sorted by free RAM descending, ties broken by hostname, then username, ascending.
     pub fn dashboard(&self, limit: Option<usize>, now: DateTime<Utc>) -> Dashboard {
         let mut hosts: Vec<Host> = self
             .hosts
@@ -83,6 +90,7 @@ impl Store {
             b.free_ram_bytes
                 .cmp(&a.free_ram_bytes)
                 .then_with(|| a.hostname.cmp(&b.hostname))
+                .then_with(|| a.username.cmp(&b.username))
         });
 
         let ranked = hosts
@@ -146,13 +154,13 @@ mod tests {
         assert_eq!(dash.host_count, 1);
         assert_eq!(dash.hosts[0].host.hostname, "new");
         assert_eq!(dash.hosts[0].rank, 1);
-        assert!(store.get("old", now).is_none());
-        assert!(!store.remove("old", now));
+        assert!(store.get("u", "old", now).is_none());
+        assert!(!store.remove("u", "old", now));
 
         store.upsert(host("old", 90, t0));
         assert_eq!(store.prune(now), 1);
         assert_eq!(store.prune(now), 0);
-        assert!(store.get("new", now).is_some());
+        assert!(store.get("u", "new", now).is_some());
     }
 
     #[test]
@@ -162,5 +170,31 @@ mod tests {
         assert!(store.upsert(host("h", 1, t0)));
         assert!(!store.upsert(host("h", 1, t0 + secs(30))));
         assert!(store.upsert(host("h", 1, t0 + secs(100))));
+    }
+
+    #[test]
+    fn same_hostname_different_users_are_separate() {
+        let t0 = Utc::now();
+        let store = Store::new(secs(60));
+        let as_user = |user: &str, free| Host {
+            username: user.into(),
+            ..host("h", free, t0)
+        };
+        assert!(store.upsert(as_user("bob", 10)));
+        assert!(store.upsert(as_user("alice", 10)));
+        assert!(store.upsert(as_user("carol", 20)));
+
+        let dash = store.dashboard(None, t0);
+        let users: Vec<_> = dash
+            .hosts
+            .iter()
+            .map(|h| h.host.username.as_str())
+            .collect();
+        assert_eq!(users, ["carol", "alice", "bob"], "free desc, then username");
+
+        assert!(store.remove("alice", "h", t0));
+        assert!(store.get("alice", "h", t0).is_none());
+        assert!(store.get("bob", "h", t0).is_some());
+        assert!(store.get("dave", "h", t0).is_none());
     }
 }

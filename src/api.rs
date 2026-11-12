@@ -185,26 +185,33 @@ fn describe(responses: &mut Responses, status: u16, description: &str) {
     }
 }
 
-fn parse_hostname(raw: &str) -> Result<String, Invalid> {
-    normalize_hostname(raw).map_err(Invalid)
+/// Validates the `{username}/{hostname}` path segments every per-host route takes.
+fn parse_target(username: &str, hostname: &str) -> Result<(String, String), Invalid> {
+    Ok((
+        normalize_username(username).map_err(Invalid)?,
+        normalize_hostname(hostname).map_err(Invalid)?,
+    ))
 }
 
-fn not_found(hostname: &str) -> ApiError {
-    ApiError::NotFound(format!("host '{hostname}' not found"))
+fn not_found(username: &str, hostname: &str) -> ApiError {
+    ApiError::NotFound(format!("host '{username}/{hostname}' not found"))
 }
 
 // ---------------------------------------------------------------------------
 // Routes (mounted under /api/v1)
+//
+// A host is identified by `{username}/{hostname}`: the same machine reported
+// by two users is two separate entries.
 // ---------------------------------------------------------------------------
 
 /// # Report the current memory state of a host
 ///
 /// Idempotent upsert, called periodically by an agent on each host. Replaces
-/// the previous report for the hostname and sets `last_seen` to server time.
-/// Hostnames are 1-253 chars of `[A-Za-z0-9._-]`, case-insensitive.
-/// The username (percent-encoded if needed) must be non-empty after trimming
-/// and at most 256 bytes.
-/// Every accepted report is also appended to the host's history.
+/// the previous report for `{username}/{hostname}` and sets `last_seen` to
+/// server time. Hostnames are 1-253 chars of `[A-Za-z0-9._-]`,
+/// case-insensitive. The username (percent-encoded if needed) must be
+/// non-empty after trimming and at most 256 bytes; it is case-sensitive.
+/// Every accepted report is also appended to the history.
 /// Requires the API token.
 #[openapi(tag = "Reporting")]
 #[put("/report/<username>/<hostname>", format = "json", data = "<report>")]
@@ -216,8 +223,7 @@ pub fn report_host(
     store: &State<Arc<Store>>,
     history: &State<Arc<History>>,
 ) -> Result<Reported, Invalid> {
-    let username = normalize_username(username).map_err(Invalid)?;
-    let hostname = parse_hostname(hostname)?;
+    let (username, hostname) = parse_target(username, hostname)?;
     let report = report
         .map_err(|e| Invalid(format!("invalid body: {e}")))?
         .into_inner();
@@ -233,7 +239,10 @@ pub fn report_host(
     };
     // A history failure shouldn't take the live dashboard down with it.
     if let Err(e) = history.record(&host) {
-        eprintln!("failed to record history for '{}': {e}", host.hostname);
+        eprintln!(
+            "failed to record history for '{}/{}': {e}",
+            host.username, host.hostname
+        );
     }
     let created = store.upsert(host.clone());
     Ok(Reported { created, host })
@@ -241,19 +250,20 @@ pub fn report_host(
 
 /// # Get the report history of a host
 ///
-/// Stored reports, newest first. `since` (RFC 3339) returns only reports at or
-/// after that time; `limit` defaults to 100 (max 10000). History is kept for
-/// `history_retention_days` and is not affected by staleness or DELETE.
-/// Unknown hosts return an empty list.
+/// Stored reports of `{username}/{hostname}`, newest first. `since` (RFC 3339)
+/// returns only reports at or after that time; `limit` defaults to 100
+/// (max 10000). History is kept for `history_retention_days` and is not
+/// affected by staleness or DELETE. Unknown hosts return an empty list.
 #[openapi(tag = "Dashboard")]
-#[get("/hosts/<hostname>/history?<since>&<limit>")]
+#[get("/history/<username>/<hostname>?<since>&<limit>")]
 pub fn host_history(
+    username: &str,
     hostname: &str,
     since: Option<&str>,
     limit: Option<usize>,
     history: &State<Arc<History>>,
 ) -> Result<Json<HostHistory>, HistoryError> {
-    let hostname = parse_hostname(hostname)?;
+    let (username, hostname) = parse_target(username, hostname)?;
     let limit = limit.unwrap_or(HISTORY_DEFAULT_LIMIT);
     if !(1..=HISTORY_MAX_LIMIT).contains(&limit) {
         return Err(Invalid(format!("limit must be 1-{HISTORY_MAX_LIMIT}")).into());
@@ -266,43 +276,52 @@ pub fn host_history(
         })
         .transpose()?;
     let entries = history
-        .for_host(&hostname, since, limit)
+        .for_host(&username, &hostname, since, limit)
         .map_err(HistoryError::Database)?;
-    Ok(Json(HostHistory { hostname, entries }))
+    Ok(Json(HostHistory {
+        username,
+        hostname,
+        entries,
+    }))
 }
 
 /// # Get the latest report of a single host
 #[openapi(tag = "Dashboard")]
-#[get("/hosts/<hostname>")]
-pub fn get_host(hostname: &str, store: &State<Arc<Store>>) -> Result<Json<Host>, ApiError> {
-    let hostname = parse_hostname(hostname)?;
+#[get("/host/<username>/<hostname>")]
+pub fn get_host(
+    username: &str,
+    hostname: &str,
+    store: &State<Arc<Store>>,
+) -> Result<Json<Host>, ApiError> {
+    let (username, hostname) = parse_target(username, hostname)?;
     store
-        .get(&hostname, Utc::now())
+        .get(&username, &hostname, Utc::now())
         .map(Json)
-        .ok_or_else(|| not_found(&hostname))
+        .ok_or_else(|| not_found(&username, &hostname))
 }
 
 /// # Remove a host from the dashboard
 ///
 /// The host's history is kept. Requires the API token.
 #[openapi(tag = "Reporting")]
-#[delete("/hosts/<hostname>")]
+#[delete("/host/<username>/<hostname>")]
 pub fn delete_host(
     _auth: WriteAuth,
+    username: &str,
     hostname: &str,
     store: &State<Arc<Store>>,
 ) -> Result<NoContent, ApiError> {
-    let hostname = parse_hostname(hostname)?;
-    if store.remove(&hostname, Utc::now()) {
+    let (username, hostname) = parse_target(username, hostname)?;
+    if store.remove(&username, &hostname, Utc::now()) {
         Ok(NoContent)
     } else {
-        Err(not_found(&hostname))
+        Err(not_found(&username, &hostname))
     }
 }
 
 /// # Get all hosts ranked by free RAM
 ///
-/// Sorted by `free_ram_bytes` descending, ties broken by hostname ascending;
+/// Sorted by `free_ram_bytes` descending, ties broken by hostname, then username, ascending;
 /// `rank` starts at 1. Stale hosts are excluded. Use `limit` (>= 1) to get
 /// only the top N hosts.
 #[openapi(tag = "Dashboard")]

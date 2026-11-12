@@ -36,7 +36,9 @@ impl History {
                  total_ram_bytes INTEGER NOT NULL,
                  reported_at     TEXT    NOT NULL
              );
-             CREATE INDEX IF NOT EXISTS reports_host_time ON reports (hostname, reported_at);
+             DROP INDEX IF EXISTS reports_host_time;
+             CREATE INDEX IF NOT EXISTS reports_user_host_time
+                 ON reports (username, hostname, reported_at);
              CREATE INDEX IF NOT EXISTS reports_time ON reports (reported_at);",
         )?;
         Ok(Self {
@@ -59,32 +61,33 @@ impl History {
         Ok(())
     }
 
-    /// Reports for one host, newest first, optionally only those at/after `since`.
+    /// Reports of one user on one host, newest first, optionally only those
+    /// at/after `since`.
     pub fn for_host(
         &self,
+        username: &str,
         hostname: &str,
         since: Option<DateTime<Utc>>,
         limit: usize,
     ) -> rusqlite::Result<Vec<HistoryEntry>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare_cached(
-            "SELECT username, free_ram_bytes, total_ram_bytes, reported_at FROM reports
-             WHERE hostname = ?1 AND reported_at >= ?2
+            "SELECT free_ram_bytes, total_ram_bytes, reported_at FROM reports
+             WHERE username = ?1 AND hostname = ?2 AND reported_at >= ?3
              ORDER BY reported_at DESC, id DESC
-             LIMIT ?3",
+             LIMIT ?4",
         )?;
         let since = since.map(ts).unwrap_or_default();
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        stmt.query_map(params![hostname, since, limit], |row| {
-            let reported_at: String = row.get(3)?;
+        stmt.query_map(params![username, hostname, since, limit], |row| {
+            let reported_at: String = row.get(2)?;
             Ok(HistoryEntry {
-                username: row.get(0)?,
-                free_ram_bytes: row.get(1)?,
-                total_ram_bytes: row.get(2)?,
+                free_ram_bytes: row.get(0)?,
+                total_ram_bytes: row.get(1)?,
                 reported_at: DateTime::parse_from_rfc3339(&reported_at)
                     .map_err(|e| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            3,
+                            2,
                             rusqlite::types::Type::Text,
                             Box::new(e),
                         )
@@ -129,17 +132,24 @@ mod tests {
         }
         h.record(&host("b", 50, t0)).unwrap();
 
-        let all = h.for_host("a", None, 100).unwrap();
+        let all = h.for_host("u", "a", None, 100).unwrap();
         let frees: Vec<_> = all.iter().map(|e| e.free_ram_bytes).collect();
         assert_eq!(frees, [2, 1, 0], "newest first, other hosts excluded");
         assert_eq!(all[0].reported_at, t0 + s(2));
 
-        assert_eq!(h.for_host("a", None, 1).unwrap().len(), 1);
-        assert_eq!(h.for_host("a", Some(t0 + s(1)), 100).unwrap().len(), 2);
-        assert!(h.for_host("nope", None, 100).unwrap().is_empty());
+        assert_eq!(h.for_host("u", "a", None, 1).unwrap().len(), 1);
+        assert_eq!(h.for_host("u", "a", Some(t0 + s(1)), 100).unwrap().len(), 2);
+        assert!(h.for_host("u", "nope", None, 100).unwrap().is_empty());
+        let other_user = Host {
+            username: "v".into(),
+            ..host("a", 99, t0)
+        };
+        h.record(&other_user).unwrap();
+        assert_eq!(h.for_host("u", "a", None, 100).unwrap().len(), 3);
+        assert_eq!(h.for_host("v", "a", None, 100).unwrap().len(), 1);
 
-        assert_eq!(h.prune(t0 + s(1)).unwrap(), 2); // a@t0 and b@t0
-        assert_eq!(h.for_host("a", None, 100).unwrap().len(), 2);
+        assert_eq!(h.prune(t0 + s(1)).unwrap(), 3); // u/a@t0, u/b@t0, v/a@t0
+        assert_eq!(h.for_host("u", "a", None, 100).unwrap().len(), 2);
     }
 
     #[test]
@@ -156,7 +166,7 @@ mod tests {
         assert_eq!(
             History::open(path)
                 .unwrap()
-                .for_host("a", None, 10)
+                .for_host("u", "a", None, 10)
                 .unwrap()
                 .len(),
             1

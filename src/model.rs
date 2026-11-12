@@ -110,16 +110,16 @@ pub struct ErrorBody {
 /// One past report of a host.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct HistoryEntry {
-    pub username: String,
     pub free_ram_bytes: u64,
     pub total_ram_bytes: u64,
     /// Server time the report arrived.
     pub reported_at: DateTime<Utc>,
 }
 
-/// Stored reports of a host, newest first.
+/// Stored reports of one user on one host, newest first.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct HostHistory {
+    pub username: String,
     /// Lowercased hostname.
     pub hostname: String,
     pub entries: Vec<HistoryEntry>,

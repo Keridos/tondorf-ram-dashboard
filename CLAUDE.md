@@ -13,7 +13,7 @@ There is no global Rust toolchain on this NixOS machine; wrap commands in
 ./run.sh                  # cargo run with DB at ~/.ramdashboard/data.sqlite; works from any cwd, args go to cargo
 ./restart.sh              # build, then (re)start detached on 63151; pid+log in ~/.ramdashboard/server.{pid,log}
 cargo run                 # serves on port 63151 (from Rocket.toml), writes ./wuppp.db
-cargo test                # 19 tests, ~2.5s (one test sleeps to exercise the sweeper)
+cargo test                # 21 tests, ~2.5s (one test sleeps to exercise the sweeper)
 cargo clippy --all-targets
 cargo fmt
 ```
@@ -30,7 +30,7 @@ cargo fmt
 | `src/auth.rs` | `WriteAuth` request guard (bearer token, constant-time compare) + its OpenAPI security scheme |
 | `src/history.rs` | SQLite `History` (`Mutex<rusqlite::Connection>`): record, query, prune, unit tests |
 | `src/model.rs` | Request/response types with `JsonSchema`, validation, hostname normalization |
-| `src/store.rs` | In-memory `Store` (`RwLock<HashMap>`), ranking, stale filtering/pruning, unit tests |
+| `src/store.rs` | In-memory `Store` (`RwLock<HashMap<(username, hostname), Host>>`), ranking, stale filtering/pruning, unit tests |
 | `run.sh` | Launcher: cds to the repo, sets `ROCKET_DATABASE_PATH=~/.ramdashboard/data.sqlite`, runs cargo (via nix-shell if cargo isn't on PATH) |
 | `restart.sh` | Builds, stops the instance in `~/.ramdashboard/server.pid` (whole process group), starts `run.sh` detached via `setsid`, waits for `/api/health` |
 | `Rocket.toml` | `port`, `stale_after_secs`, `sweep_interval_secs`, `api_token`, `database_path`, `history_retention_days` |
@@ -40,18 +40,19 @@ cargo fmt
 | Method | Path | Auth | Codes |
 |---|---|---|---|
 | PUT | `/api/v1/report/{username}/{hostname}` body `{free_ram_bytes, total_ram_bytes}` | token | 201 new/re-appeared, 200 updated, 401, 422 |
-| GET | `/api/v1/hosts/{hostname}` | | 200, 404, 422 |
-| DELETE | `/api/v1/hosts/{hostname}` | token | 204, 401, 404, 422 |
-| GET | `/api/v1/hosts/{hostname}/history?since=RFC3339&limit=N` | | 200, 422, 500 |
+| GET | `/api/v1/host/{username}/{hostname}` | | 200, 404, 422 |
+| DELETE | `/api/v1/host/{username}/{hostname}` | token | 204, 401, 404, 422 |
+| GET | `/api/v1/history/{username}/{hostname}?since=RFC3339&limit=N` | | 200, 422, 500 |
 | GET | `/api/v1/dashboard?limit=N` | | 200, 422 |
 | GET | `/api/health` | | 200 |
 
 Rules:
 - **Auth:** PUT and DELETE need `Authorization: Bearer <api_token>`. There is one global token, `tondorf.is.cool` (the user chose it), set in `Rocket.toml` / `ROCKET_API_TOKEN`. An empty token fails startup. Reads are open. Auth failures go through the catcher: `401 {"error":"unauthorized"}`.
 - **Memory and time:** memory values are bytes (u64), and timestamps are RFC 3339 UTC with microsecond precision.
+- **Identity:** a host is `{username}/{hostname}`. Every per-host route takes both as path segments (`/v1/<word>/{username}/{hostname}`), and the same machine reported by two users is two separate dashboard entries with separate histories. The response of `history` carries `username` and `hostname` at the top level, not per entry.
 - **Hostnames:** 1-253 chars of `[A-Za-z0-9._-]`, case-insensitive, stored lowercased.
-- **Validation:** the username (path segment, percent-decoded) must be non-empty after trimming and ≤256 bytes; an empty segment (`/report//h`) never matches the route and gives 404; `0 < total ≤ i64::MAX`; `free <= total`; unknown JSON fields are rejected.
-- **Ranking:** `free_ram_bytes` descending, ties broken by hostname ascending, `rank` starts at 1.
+- **Validation:** the username (path segment, percent-decoded, case-sensitive) must be non-empty after trimming and ≤256 bytes; an empty segment (`/report//h`) never matches the route and gives 404; `0 < total ≤ i64::MAX`; `free <= total`; unknown JSON fields are rejected.
+- **Ranking:** `free_ram_bytes` descending, ties broken by hostname then username ascending, `rank` starts at 1.
 - **Errors:** always `{"error": "..."}`, including Rocket's own catcher responses.
 - **`last_seen`:** set by the server when the report arrives.
 - **Stale hosts:** a host that hasn't reported for more than `stale_after_secs` (default 300) is hidden from all reads immediately. A background task on liftoff deletes stale hosts every `sweep_interval_secs` (default 30). Both must be ≥1, or startup fails.
@@ -85,7 +86,7 @@ Rules:
 
 ## Current state
 
-- **Features:** all of the above is implemented, tested (19 passing) and clippy-clean.
+- **Features:** all of the above is implemented, tested (21 passing) and clippy-clean.
 - **Server copy:** the repo is copied to `y7v.de:~/wuppp`. That server has git but **no Rust toolchain**, so the service isn't built or running there yet.
 
 ## Roadmap / open items
