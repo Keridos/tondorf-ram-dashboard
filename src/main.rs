@@ -225,11 +225,11 @@ mod tests {
     }
 
     fn report(c: &Client, host: &str, user: &str, free: u64, total: u64) -> Status {
-        c.put(format!("/api/v1/hosts/{host}"))
+        c.put(format!("/api/v1/report/{user}/{host}"))
             .header(ContentType::JSON)
             .header(auth(TOKEN))
             .body(format!(
-                r#"{{"username":"{user}","free_ram_bytes":{free},"total_ram_bytes":{total}}}"#
+                r#"{{"free_ram_bytes":{free},"total_ram_bytes":{total}}}"#
             ))
             .dispatch()
             .status()
@@ -275,7 +275,12 @@ mod tests {
         let c = client();
         assert_eq!(report(&c, "h", "a", 5, 4), Status::UnprocessableEntity);
         assert_eq!(report(&c, "h", "a", 0, 0), Status::UnprocessableEntity);
-        assert_eq!(report(&c, "h", "", 1, 2), Status::UnprocessableEntity);
+        assert_eq!(report(&c, "h", "%20", 1, 2), Status::UnprocessableEntity);
+        let long_user = "u".repeat(257);
+        assert_eq!(
+            report(&c, "h", &long_user, 1, 2),
+            Status::UnprocessableEntity
+        );
         assert_eq!(
             report(&c, "bad%20host", "a", 1, 2),
             Status::UnprocessableEntity
@@ -287,14 +292,45 @@ mod tests {
         );
 
         let res = c
-            .put("/api/v1/hosts/h")
+            .put("/api/v1/report/a/h")
             .header(ContentType::JSON)
             .header(auth(TOKEN))
-            .body(r#"{"username":"a"}"#)
+            .body(r#"{"free_ram_bytes":1}"#)
             .dispatch();
         assert_eq!(res.status(), Status::UnprocessableEntity);
         let body: Value = res.into_json().unwrap();
         assert!(body["error"].as_str().unwrap().contains("missing field"));
+
+        // The username belongs in the path now.
+        let res = c
+            .put("/api/v1/report/a/h")
+            .header(ContentType::JSON)
+            .header(auth(TOKEN))
+            .body(r#"{"username":"a","free_ram_bytes":1,"total_ram_bytes":2}"#)
+            .dispatch();
+        assert_eq!(res.status(), Status::UnprocessableEntity);
+    }
+
+    #[test]
+    fn report_takes_username_and_hostname_from_path() {
+        let c = client();
+        assert_eq!(report(&c, "Web-01", "alice%20b", 1, 2), Status::Created);
+        let host: Value = c
+            .get("/api/v1/hosts/web-01")
+            .dispatch()
+            .into_json()
+            .unwrap();
+        assert_eq!(host["hostname"], "web-01");
+        assert_eq!(host["username"], "alice b");
+
+        // The old route is gone.
+        let res = c
+            .put("/api/v1/hosts/web-01")
+            .header(ContentType::JSON)
+            .header(auth(TOKEN))
+            .body(r#"{"free_ram_bytes":1,"total_ram_bytes":2}"#)
+            .dispatch();
+        assert_eq!(res.status(), Status::NotFound);
     }
 
     #[test]
@@ -322,9 +358,9 @@ mod tests {
         let c = client();
         let put = |headers: Vec<Header<'static>>| {
             let mut req = c
-                .put("/api/v1/hosts/h")
+                .put("/api/v1/report/a/h")
                 .header(ContentType::JSON)
-                .body(r#"{"username":"a","free_ram_bytes":1,"total_ram_bytes":2}"#);
+                .body(r#"{"free_ram_bytes":1,"total_ram_bytes":2}"#);
             for h in headers {
                 req = req.header(h);
             }
@@ -468,7 +504,12 @@ mod tests {
                 .collect()
         };
         let host = "/v1/hosts/{hostname}";
-        assert_eq!(codes(host, "put"), ["200", "201", "401", "422"]);
+        let report = "/v1/report/{username}/{hostname}";
+        assert_eq!(codes(report, "put"), ["200", "201", "401", "422"]);
+        assert!(
+            spec["paths"][host]["put"].is_null(),
+            "old PUT route still documented"
+        );
         assert_eq!(codes(host, "get"), ["200", "404", "422"]);
         assert_eq!(codes(host, "delete"), ["204", "401", "404", "422"]);
         assert_eq!(
@@ -480,7 +521,7 @@ mod tests {
 
         // Only the write routes declare the bearer token.
         let secured = |path: &str, method: &str| spec["paths"][path][method]["security"].is_array();
-        assert!(secured(host, "put") && secured(host, "delete"));
+        assert!(secured(report, "put") && secured(host, "delete"));
         assert!(!secured(host, "get"));
         assert_eq!(
             spec["components"]["securitySchemes"]["bearerAuth"]["scheme"],

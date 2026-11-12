@@ -13,7 +13,7 @@ There is no global Rust toolchain on this NixOS machine; wrap commands in
 ./run.sh                  # cargo run with DB at ~/.ramdashboard/data.sqlite; works from any cwd, args go to cargo
 ./restart.sh              # build, then (re)start detached on 63151; pid+log in ~/.ramdashboard/server.{pid,log}
 cargo run                 # serves on port 63151 (from Rocket.toml), writes ./wuppp.db
-cargo test                # 18 tests, ~2.5s (one test sleeps to exercise the sweeper)
+cargo test                # 19 tests, ~2.5s (one test sleeps to exercise the sweeper)
 cargo clippy --all-targets
 cargo fmt
 ```
@@ -39,7 +39,7 @@ cargo fmt
 
 | Method | Path | Auth | Codes |
 |---|---|---|---|
-| PUT | `/api/v1/hosts/{hostname}` body `{username, free_ram_bytes, total_ram_bytes}` | token | 201 new/re-appeared, 200 updated, 401, 422 |
+| PUT | `/api/v1/report/{username}/{hostname}` body `{free_ram_bytes, total_ram_bytes}` | token | 201 new/re-appeared, 200 updated, 401, 422 |
 | GET | `/api/v1/hosts/{hostname}` | | 200, 404, 422 |
 | DELETE | `/api/v1/hosts/{hostname}` | token | 204, 401, 404, 422 |
 | GET | `/api/v1/hosts/{hostname}/history?since=RFC3339&limit=N` | | 200, 422, 500 |
@@ -50,7 +50,7 @@ Rules:
 - **Auth:** PUT and DELETE need `Authorization: Bearer <api_token>`. There is one global token, `tondorf.is.cool` (the user chose it), set in `Rocket.toml` / `ROCKET_API_TOKEN`. An empty token fails startup. Reads are open. Auth failures go through the catcher: `401 {"error":"unauthorized"}`.
 - **Memory and time:** memory values are bytes (u64), and timestamps are RFC 3339 UTC with microsecond precision.
 - **Hostnames:** 1-253 chars of `[A-Za-z0-9._-]`, case-insensitive, stored lowercased.
-- **Validation:** username must be non-empty after trimming and ≤256 bytes; `0 < total ≤ i64::MAX`; `free <= total`; unknown JSON fields are rejected.
+- **Validation:** the username (path segment, percent-decoded) must be non-empty after trimming and ≤256 bytes; an empty segment (`/report//h`) never matches the route and gives 404; `0 < total ≤ i64::MAX`; `free <= total`; unknown JSON fields are rejected.
 - **Ranking:** `free_ram_bytes` descending, ties broken by hostname ascending, `rank` starts at 1.
 - **Errors:** always `{"error": "..."}`, including Rocket's own catcher responses.
 - **`last_seen`:** set by the server when the report arrives.
@@ -85,7 +85,7 @@ Rules:
 
 ## Current state
 
-- **Features:** all of the above is implemented, tested (18 passing) and clippy-clean.
+- **Features:** all of the above is implemented, tested (19 passing) and clippy-clean.
 - **Server copy:** the repo is copied to `y7v.de:~/wuppp`. That server has git but **no Rust toolchain**, so the service isn't built or running there yet.
 
 ## Roadmap / open items

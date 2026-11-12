@@ -22,7 +22,9 @@ use chrono::DateTime;
 
 use crate::auth::WriteAuth;
 use crate::history::History;
-use crate::model::{Dashboard, ErrorBody, Host, HostHistory, HostReport, normalize_hostname};
+use crate::model::{
+    Dashboard, ErrorBody, Host, HostHistory, HostReport, normalize_hostname, normalize_username,
+};
 use crate::store::Store;
 
 /// Prefix for every path the service serves (routes, spec and Swagger UI).
@@ -199,18 +201,22 @@ fn not_found(hostname: &str) -> ApiError {
 ///
 /// Idempotent upsert, called periodically by an agent on each host. Replaces
 /// the previous report for the hostname and sets `last_seen` to server time.
-/// Hostnames are 1-253 chars of `[A-Za-z0-9.-_]`, case-insensitive.
+/// Hostnames are 1-253 chars of `[A-Za-z0-9._-]`, case-insensitive.
+/// The username (percent-encoded if needed) must be non-empty after trimming
+/// and at most 256 bytes.
 /// Every accepted report is also appended to the host's history.
 /// Requires the API token.
 #[openapi(tag = "Reporting")]
-#[put("/hosts/<hostname>", format = "json", data = "<report>")]
+#[put("/report/<username>/<hostname>", format = "json", data = "<report>")]
 pub fn report_host(
     _auth: WriteAuth,
+    username: &str,
     hostname: &str,
     report: Result<Json<HostReport>, json::Error<'_>>,
     store: &State<Arc<Store>>,
     history: &State<Arc<History>>,
 ) -> Result<Reported, Invalid> {
+    let username = normalize_username(username).map_err(Invalid)?;
     let hostname = parse_hostname(hostname)?;
     let report = report
         .map_err(|e| Invalid(format!("invalid body: {e}")))?
@@ -219,7 +225,7 @@ pub fn report_host(
 
     let host = Host {
         hostname,
-        username: report.username.trim().to_owned(),
+        username,
         free_ram_bytes: report.free_ram_bytes,
         total_ram_bytes: report.total_ram_bytes,
         // Microsecond precision, matching what the history stores.

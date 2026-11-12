@@ -11,9 +11,6 @@ pub const MAX_USERNAME_LEN: usize = 256;
 #[serde(deny_unknown_fields)]
 #[schemars(example = "example_report")]
 pub struct HostReport {
-    /// Name of the user on the host.
-    #[schemars(length(min = 1, max = 256))]
-    pub username: String,
     /// Free (available) RAM in bytes. Must be <= `total_ram_bytes`.
     pub free_ram_bytes: u64,
     /// Total RAM in bytes (at most 2^63-1).
@@ -23,7 +20,6 @@ pub struct HostReport {
 
 fn example_report() -> Value {
     json!({
-        "username": "alice",
         "free_ram_bytes": 8_589_934_592u64,
         "total_ram_bytes": 17_179_869_184u64,
     })
@@ -31,13 +27,6 @@ fn example_report() -> Value {
 
 impl HostReport {
     pub fn validate(&self) -> Result<(), String> {
-        let username = self.username.trim();
-        if username.is_empty() {
-            return Err("username must not be empty".into());
-        }
-        if username.len() > MAX_USERNAME_LEN {
-            return Err(format!("username must be at most {MAX_USERNAME_LEN} bytes"));
-        }
         if self.total_ram_bytes == 0 {
             return Err("total_ram_bytes must be greater than 0".into());
         }
@@ -50,6 +39,18 @@ impl HostReport {
         }
         Ok(())
     }
+}
+
+/// Validates a (percent-decoded) username and returns it trimmed.
+pub fn normalize_username(raw: &str) -> Result<String, String> {
+    let username = raw.trim();
+    if username.is_empty() {
+        return Err("username must not be empty".into());
+    }
+    if username.len() > MAX_USERNAME_LEN {
+        return Err(format!("username must be at most {MAX_USERNAME_LEN} bytes"));
+    }
+    Ok(username.to_owned())
 }
 
 /// Validates a hostname and returns its normalized (lowercase) form.
