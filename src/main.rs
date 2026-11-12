@@ -21,7 +21,7 @@ use rocket_okapi::swagger_ui::{SwaggerUIConfig, make_swagger_ui};
 use rocket_okapi::{mount_endpoints_and_merged_docs, openapi_get_routes_spec};
 use serde::Deserialize;
 
-use auth::ApiToken;
+use auth::ApiTokens;
 use history::History;
 use model::ErrorBody;
 use store::Store;
@@ -35,8 +35,8 @@ struct AppConfig {
     stale_after_secs: u64,
     /// How often the background sweeper deletes stale hosts from memory.
     sweep_interval_secs: u64,
-    /// Shared bearer token required for PUT and DELETE.
-    api_token: String,
+    /// Bearer tokens accepted for PUT and DELETE (any one of them).
+    api_tokens: Vec<String>,
     /// SQLite file holding the report history (`:memory:` for none).
     database_path: String,
     /// History rows older than this are deleted. 0 keeps history forever.
@@ -48,7 +48,7 @@ impl Default for AppConfig {
         Self {
             stale_after_secs: 300,
             sweep_interval_secs: 30,
-            api_token: "tondorf.is.cool".into(),
+            api_tokens: vec!["tondorf.is.cool".into(), "tondorf.ist.cool".into()],
             database_path: "wuppp.db".into(),
             history_retention_days: 30,
         }
@@ -59,7 +59,7 @@ impl Default for AppConfig {
 struct Settings {
     stale_after: TimeDelta,
     sweep: Sweep,
-    api_token: String,
+    api_tokens: Vec<String>,
     database_path: String,
 }
 
@@ -74,8 +74,11 @@ impl AppConfig {
         if cfg.sweep_interval_secs == 0 {
             return Err("sweep_interval_secs must be >= 1".into());
         }
-        if cfg.api_token.trim().is_empty() {
-            return Err("api_token must not be empty".into());
+        if cfg.api_tokens.is_empty() {
+            return Err("api_tokens must contain at least one token".into());
+        }
+        if cfg.api_tokens.iter().any(|t| t.trim().is_empty()) {
+            return Err("api_tokens must not contain empty tokens".into());
         }
         let retention = match cfg.history_retention_days {
             0 => None,
@@ -92,7 +95,7 @@ impl AppConfig {
                 every: Duration::from_secs(cfg.sweep_interval_secs),
                 retention,
             },
-            api_token: cfg.api_token,
+            api_tokens: cfg.api_tokens,
             database_path: cfg.database_path,
         })
     }
@@ -150,7 +153,7 @@ fn build_with(figment: Figment) -> Rocket<Build> {
             Ok(rocket
                 .manage(Arc::new(Store::new(settings.stale_after)))
                 .manage(history)
-                .manage(ApiToken(settings.api_token))
+                .manage(ApiTokens(settings.api_tokens))
                 .manage(settings.sweep))
         }))
         .attach(AdHoc::on_liftoff("Stale host sweeper", |rocket| {
@@ -447,15 +450,33 @@ mod tests {
     }
 
     #[test]
-    fn token_is_configurable() {
-        let c = Client::tracked(build_with(figment().merge(("api_token", "other")))).unwrap();
+    fn tokens_are_configurable() {
+        let tokens = ["one", "two"];
+        let c = Client::tracked(build_with(figment().merge(("api_tokens", tokens)))).unwrap();
         assert_eq!(report(&c, "h", "a", 1, 2), Status::Unauthorized);
-        let status = c
-            .delete("/api/v1/report/a/h")
-            .header(auth("other"))
-            .dispatch()
-            .status();
-        assert_eq!(status, Status::NotFound);
+        for token in tokens {
+            let status = c
+                .delete("/api/v1/report/a/h")
+                .header(auth(token))
+                .dispatch()
+                .status();
+            assert_eq!(status, Status::NotFound, "{token}");
+        }
+    }
+
+    #[test]
+    fn both_default_tokens_are_accepted() {
+        let c = client();
+        for token in ["tondorf.is.cool", "tondorf.ist.cool"] {
+            let status = c
+                .put("/api/v1/report/a/h")
+                .header(ContentType::JSON)
+                .header(auth(token))
+                .body(r#"{"free_ram_bytes":1,"total_ram_bytes":2}"#)
+                .dispatch()
+                .status();
+            assert!(status.class().is_success(), "{token}: {status}");
+        }
     }
 
     #[test]
@@ -509,10 +530,11 @@ mod tests {
 
     #[test]
     fn invalid_stale_config_fails_to_start() {
-        let bad: [(&str, Value); 4] = [
+        let bad: [(&str, Value); 5] = [
             ("stale_after_secs", 0.into()),
             ("sweep_interval_secs", 0.into()),
-            ("api_token", " ".into()),
+            ("api_tokens", Value::Array(vec![])),
+            ("api_tokens", vec!["ok", " "].into()),
             ("database_path", "/nonexistent/dir/x.db".into()),
         ];
         for (key, val) in bad {

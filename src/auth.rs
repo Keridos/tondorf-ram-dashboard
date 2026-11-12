@@ -1,7 +1,7 @@
 //! Shared-token authentication for write routes.
 //!
-//! Clients send `Authorization: Bearer <api_token>`. There is one global token
-//! (`api_token` in Rocket.toml, or `ROCKET_API_TOKEN`).
+//! Clients send `Authorization: Bearer <token>`, where the token is any one of
+//! `api_tokens` in Rocket.toml (or `ROCKET_API_TOKENS='["a","b"]'`).
 
 use rocket::Request;
 use rocket::http::Status;
@@ -16,8 +16,8 @@ use rocket_okapi::util::add_schema_response;
 
 use crate::model::ErrorBody;
 
-/// The configured token, held in managed state.
-pub struct ApiToken(pub String);
+/// The configured tokens, held in managed state.
+pub struct ApiTokens(pub Vec<String>);
 
 /// Request guard: succeeds only if the request carries the correct bearer token.
 /// On failure the request is forwarded to the JSON catcher as `401`.
@@ -30,22 +30,27 @@ impl<'r> FromRequest<'r> for WriteAuth {
     type Error = ();
 
     async fn from_request(req: &'r Request<'_>) -> Outcome<Self, ()> {
-        let expected = &req
+        let accepted = &req
             .rocket()
-            .state::<ApiToken>()
-            .expect("ApiToken is managed")
+            .state::<ApiTokens>()
+            .expect("ApiTokens is managed")
             .0;
         let provided = req
             .headers()
             .get_one("Authorization")
             .and_then(|v| v.strip_prefix("Bearer "));
         match provided {
-            Some(token) if constant_time_eq(token.as_bytes(), expected.as_bytes()) => {
-                Outcome::Success(WriteAuth)
-            }
+            Some(token) if matches_any(token, accepted) => Outcome::Success(WriteAuth),
             _ => Outcome::Error((Status::Unauthorized, ())),
         }
     }
+}
+
+/// Checks every token (no early exit), so timing doesn't reveal which one matched.
+fn matches_any(provided: &str, accepted: &[String]) -> bool {
+    accepted.iter().fold(false, |found, t| {
+        found | constant_time_eq(provided.as_bytes(), t.as_bytes())
+    })
 }
 
 /// Compares without short-circuiting on the first differing byte.
@@ -93,7 +98,7 @@ impl<'r> OpenApiFromRequest<'r> for WriteAuth {
 
 #[cfg(test)]
 mod tests {
-    use super::constant_time_eq;
+    use super::{constant_time_eq, matches_any};
 
     #[test]
     fn token_comparison() {
@@ -101,5 +106,14 @@ mod tests {
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"abcd"));
         assert!(!constant_time_eq(b"", b"a"));
+    }
+
+    #[test]
+    fn any_configured_token_matches() {
+        let accepted = ["a".to_owned(), "bb".to_owned()];
+        assert!(matches_any("a", &accepted));
+        assert!(matches_any("bb", &accepted));
+        assert!(!matches_any("b", &accepted));
+        assert!(!matches_any("", &accepted));
     }
 }

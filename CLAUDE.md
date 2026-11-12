@@ -13,7 +13,7 @@ There is no global Rust toolchain on this NixOS machine; wrap commands in
 ./run.sh                  # cargo run with DB at ~/.ramdashboard/data.sqlite; works from any cwd, args go to cargo
 ./restart.sh              # build, then (re)start detached on 63151; pid+log in ~/.ramdashboard/server.{pid,log}
 cargo run                 # serves on port 63151 (from Rocket.toml), writes ./wuppp.db
-cargo test                # 26 tests, ~2.5s (one test sleeps to exercise the sweeper)
+cargo test                # 28 tests, ~2.5s (one test sleeps to exercise the sweeper)
 cargo clippy --all-targets
 cargo fmt
 ```
@@ -34,7 +34,7 @@ cargo fmt
 | `src/store.rs` | In-memory `Store` (`RwLock<HashMap<(username, hostname), Host>>`), ranking, stale filtering/pruning, unit tests |
 | `run.sh` | Launcher: cds to the repo, sets `ROCKET_DATABASE_PATH=~/.ramdashboard/data.sqlite`, runs cargo (via nix-shell if cargo isn't on PATH) |
 | `restart.sh` | Builds, stops the instance in `~/.ramdashboard/server.pid` (whole process group), starts `run.sh` detached via `setsid`, waits for `/api/health` |
-| `Rocket.toml` | `port`, `stale_after_secs`, `sweep_interval_secs`, `api_token`, `database_path`, `history_retention_days` |
+| `Rocket.toml` | `port`, `stale_after_secs`, `sweep_interval_secs`, `api_tokens`, `database_path`, `history_retention_days` |
 
 ## API
 
@@ -49,7 +49,7 @@ cargo fmt
 | GET | `/` | | 200, the dashboard page; not in the spec |
 
 Rules:
-- **Auth:** PUT and DELETE need `Authorization: Bearer <api_token>`. There is one global token, `tondorf.is.cool` (the user chose it), set in `Rocket.toml` / `ROCKET_API_TOKEN`. An empty token fails startup. Reads are open. Auth failures go through the catcher: `401 {"error":"unauthorized"}`.
+- **Auth:** PUT and DELETE need `Authorization: Bearer <token>`, where the token is any one of `api_tokens`: `tondorf.is.cool` and `tondorf.ist.cool` (the user chose both), set in `Rocket.toml` / `ROCKET_API_TOKENS='["a","b"]'`. All tokens are compared in constant time, without stopping at a match. An empty list or an empty token fails startup. Reads are open. Auth failures go through the catcher: `401 {"error":"unauthorized"}`.
 - **Memory and time:** memory values are bytes (u64), and timestamps are RFC 3339 UTC with microsecond precision.
 - **Identity:** a host is `{username}/{hostname}`. Every per-host route lives under `/v1/report/{username}/{hostname}` (PUT, GET, DELETE, plus `/history`), and the same machine reported by two users is two separate dashboard entries with separate histories. The response of `history` carries `username` and `hostname` at the top level, not per entry.
 - **Hostnames:** 1-253 chars of `[A-Za-z0-9._-]`, case-insensitive, stored lowercased.
@@ -91,7 +91,7 @@ Rules:
 
 ## Current state
 
-- **Features:** all of the above is implemented, tested (26 passing) and clippy-clean.
+- **Features:** all of the above is implemented, tested (28 passing) and clippy-clean.
 - **Server copy:** the repo is copied to `y7v.de:~/wuppp`. That server has git but **no Rust toolchain**, so the service isn't built or running there yet.
 
 ## Roadmap / open items
