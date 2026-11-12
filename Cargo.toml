@@ -1,0 +1,9 @@
+[package]
+name = "ram-dashboard"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rocket = { version = "0.5", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
