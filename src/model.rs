@@ -1,16 +1,32 @@
 use chrono::{DateTime, Utc};
+use rocket::serde::json::{Value, json};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const MAX_HOSTNAME_LEN: usize = 253;
 pub const MAX_USERNAME_LEN: usize = 256;
 
-/// Body of `PUT /api/v1/hosts/<hostname>`.
-#[derive(Debug, Deserialize)]
+/// Memory report sent by a host.
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(example = "example_report")]
 pub struct HostReport {
+    /// Name of the user on the host.
+    #[schemars(length(min = 1, max = 256))]
     pub username: String,
+    /// Free (available) RAM in bytes. Must be <= `total_ram_bytes`.
     pub free_ram_bytes: u64,
+    /// Total RAM in bytes.
+    #[schemars(range(min = 1))]
     pub total_ram_bytes: u64,
+}
+
+fn example_report() -> Value {
+    json!({
+        "username": "alice",
+        "free_ram_bytes": 8_589_934_592u64,
+        "total_ram_bytes": 17_179_869_184u64,
+    })
 }
 
 impl HostReport {
@@ -47,32 +63,41 @@ pub fn normalize_hostname(raw: &str) -> Result<String, String> {
 }
 
 /// Latest stored state of a host.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Host {
+    /// Lowercased hostname.
     pub hostname: String,
     pub username: String,
     pub free_ram_bytes: u64,
     pub total_ram_bytes: u64,
+    /// Server time of the latest report.
     pub last_seen: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+/// A host with its position on the dashboard.
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct RankedHost {
+    /// 1-based position, ordered by free RAM descending.
     pub rank: usize,
     #[serde(flatten)]
     pub host: Host,
+    /// `free_ram_bytes / total_ram_bytes * 100`, rounded to 2 decimals.
     pub free_ram_percent: f64,
 }
 
-#[derive(Debug, Serialize)]
+/// Hosts ranked by free RAM.
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct Dashboard {
     pub generated_at: DateTime<Utc>,
+    /// Hosts are dropped this many seconds after their `last_seen`.
     pub stale_after_secs: u64,
+    /// Number of non-stale hosts (before `limit` is applied).
     pub host_count: usize,
     pub hosts: Vec<RankedHost>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ApiError {
+/// Error response body.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ErrorBody {
     pub error: String,
 }
