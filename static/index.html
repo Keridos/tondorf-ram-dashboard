@@ -107,6 +107,10 @@
 // The server fills in the API prefix (api::BASE_PATH). The URL is resolved
 // relative to the page, so the page also works below a proxy sub-path.
 const API = "." + "__API_BASE__" + "/v1/dashboard";
+// Fingerprint of this page. API responses carry the server's current one in
+// X-Frontend-Version; a mismatch means a new frontend was deployed.
+const VERSION = "__FRONTEND_VERSION__";
+const RELOAD_GUARD_MS = 60000; // at most one auto-reload per minute
 const REFRESH_MS = 5000;
 
 const GiB = 1024 ** 3;
@@ -237,9 +241,22 @@ function render(dash) {
 
 function status(text) { document.getElementById("status").textContent = text; }
 
+// Reloads the page when the server runs a different frontend. The guard stops
+// a reload loop if a cache keeps serving an old page.
+function reloadIfOutdated(serverVersion) {
+  if (!serverVersion || serverVersion === VERSION) return false;
+  let last = 0;
+  try { last = Number(sessionStorage.getItem("frontend-reload-at")) || 0; } catch {}
+  if (Date.now() - last < RELOAD_GUARD_MS) return false;
+  try { sessionStorage.setItem("frontend-reload-at", String(Date.now())); } catch {}
+  location.reload();
+  return true;
+}
+
 async function refresh() {
   try {
     const res = await fetch(API, { cache: "no-store" });
+    if (reloadIfOutdated(res.headers.get("X-Frontend-Version"))) return;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     render(await res.json());
   } catch (e) {

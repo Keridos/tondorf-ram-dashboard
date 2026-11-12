@@ -3,7 +3,8 @@
 //! Doc comments on route functions become the spec: a leading `# Title` line is
 //! the operation summary, the rest is the description.
 
-use std::sync::Arc;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::{Arc, LazyLock};
 
 use chrono::{SubsecRound, Utc};
 use rocket::http::Status;
@@ -363,11 +364,31 @@ pub fn dashboard(
 // Routes (mounted under BASE_PATH)
 // ---------------------------------------------------------------------------
 
+const FRONTEND_HTML: &str = include_str!("../static/index.html");
+
+/// Header carrying `frontend_version()` on every response. Open dashboard
+/// pages compare it with their own version and reload when it differs.
+pub const FRONTEND_VERSION_HEADER: &str = "X-Frontend-Version";
+
+/// Fingerprint of the page source (and the API prefix it is built with).
+pub fn frontend_version() -> &'static str {
+    static VERSION: LazyLock<String> = LazyLock::new(|| {
+        let mut h = DefaultHasher::new();
+        (FRONTEND_HTML, BASE_PATH).hash(&mut h);
+        format!("{:016x}", h.finish())
+    });
+    &VERSION
+}
+
 /// The dashboard page, mounted at `/` (outside `BASE_PATH` and the spec).
-/// It fetches `BASE_PATH/v1/dashboard`, filled in here.
+/// It fetches `BASE_PATH/v1/dashboard`; prefix and version are filled in here.
 #[get("/")]
 pub fn frontend() -> RawHtml<String> {
-    RawHtml(include_str!("../static/index.html").replace("__API_BASE__", BASE_PATH))
+    RawHtml(
+        FRONTEND_HTML
+            .replace("__API_BASE__", BASE_PATH)
+            .replace("__FRONTEND_VERSION__", frontend_version()),
+    )
 }
 
 #[derive(Serialize, JsonSchema)]

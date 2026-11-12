@@ -185,6 +185,15 @@ fn build_with(figment: Figment) -> Rocket<Build> {
                 res.set_header(Header::new("Access-Control-Allow-Origin", "*"));
             })
         }))
+        // Lets open dashboard pages notice a new frontend and reload themselves.
+        .attach(AdHoc::on_response("Frontend version", |_req, res| {
+            Box::pin(async move {
+                res.set_header(Header::new(
+                    api::FRONTEND_VERSION_HEADER,
+                    api::frontend_version(),
+                ));
+            })
+        }))
 }
 
 /// Background sweeper settings.
@@ -628,6 +637,14 @@ mod tests {
         let html = res.into_string().unwrap();
         assert!(html.contains(r#"const API = "." + "/api" + "/v1/dashboard";"#));
         assert!(!html.contains("__API_BASE__"));
+        assert!(!html.contains("__FRONTEND_VERSION__"));
+
+        // The page embeds the version every response announces.
+        let version = crate::api::frontend_version();
+        assert_eq!(version.len(), 16);
+        assert!(html.contains(&format!(r#"const VERSION = "{version}";"#)));
+        let res = c.get("/api/v1/dashboard").dispatch();
+        assert_eq!(res.headers().get_one("X-Frontend-Version"), Some(version));
         for path in ["/api/", "/api"] {
             assert_eq!(c.get(path).dispatch().status(), Status::NotFound, "{path}");
         }
