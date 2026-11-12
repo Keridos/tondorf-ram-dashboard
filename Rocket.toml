@@ -1,6 +1,8 @@
 # Rocket configuration. Any value can be overridden with a ROCKET_<KEY>
 # environment variable, e.g. ROCKET_PORT=8080.
 [default]
+# Localhost only: a reverse proxy in front forwards the public traffic.
+address = "127.0.0.1"
 port = 63151
 
 # Hosts that haven't reported for this many seconds are removed.

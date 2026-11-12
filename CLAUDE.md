@@ -81,7 +81,7 @@ Rules:
 - **`PRAGMA journal_mode`** returns a row, so it must go through `query_row`, not `execute`.
 - **Blocking DB calls:** SQLite calls run directly in the (sync) route handlers. That's fine at this scale (WAL, `synchronous = NORMAL`). The sweeper's prune uses `spawn_blocking`.
 - **Config lookup:** `Rocket.toml` is found by searching the working directory and its parents. When started from elsewhere, the port falls back to 8000, but the token and DB path keep their code defaults. Use `ROCKET_PORT` or `ROCKET_CONFIG`.
-- **Bind address:** Rocket binds to 127.0.0.1 by default. Set `ROCKET_ADDRESS=0.0.0.0` to accept remote clients.
+- **Bind address:** `Rocket.toml` sets `address = "127.0.0.1"` on purpose: a reverse proxy in front forwards public traffic. Don't bind to 0.0.0.0.
 
 ## Current state
 
@@ -90,6 +90,6 @@ Rules:
 
 ## Roadmap / open items
 
-1. **Deploy to y7v.de:** install rustup there, or cross-copy a release binary. Set `address = "0.0.0.0"`, put `wuppp.db` somewhere persistent (`database_path`). Optionally add a systemd unit.
+1. **Deploy to y7v.de:** install rustup there, or cross-copy a release binary. Keep `address = "127.0.0.1"` behind the reverse proxy, put `wuppp.db` somewhere persistent (`database_path`). Optionally add a systemd unit.
 2. **Restrict CORS** to the frontend's origin instead of `*`.
 3. **Spec polish:** a hostname `pattern` and `limit` minimum 1 would need post-processing of the generated spec.
