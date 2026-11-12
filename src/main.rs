@@ -316,7 +316,7 @@ mod tests {
         let c = client();
         assert_eq!(report(&c, "Web-01", "alice%20b", 1, 2), Status::Created);
         let host: Value = c
-            .get("/api/v1/host/alice%20b/WEB-01")
+            .get("/api/v1/report/alice%20b/WEB-01")
             .dispatch()
             .into_json()
             .unwrap();
@@ -331,7 +331,12 @@ mod tests {
             .body(r#"{"free_ram_bytes":1,"total_ram_bytes":2}"#)
             .dispatch();
         assert_eq!(res.status(), Status::NotFound);
-        for old in ["/api/v1/hosts/web-01", "/api/v1/hosts/web-01/history"] {
+        for old in [
+            "/api/v1/hosts/web-01",
+            "/api/v1/hosts/web-01/history",
+            "/api/v1/host/alice%20b/web-01",
+            "/api/v1/history/alice%20b/web-01",
+        ] {
             assert_eq!(c.get(old).dispatch().status(), Status::NotFound, "{old}");
         }
     }
@@ -351,12 +356,12 @@ mod tests {
 
         // Usernames are case-sensitive, hostnames aren't.
         let get = |path: &str| c.get(path).dispatch().status();
-        assert_eq!(get("/api/v1/host/bob/BOX"), Status::Ok);
-        assert_eq!(get("/api/v1/host/Bob/box"), Status::NotFound);
-        assert_eq!(get("/api/v1/host/carol/box"), Status::NotFound);
+        assert_eq!(get("/api/v1/report/bob/BOX"), Status::Ok);
+        assert_eq!(get("/api/v1/report/Bob/box"), Status::NotFound);
+        assert_eq!(get("/api/v1/report/carol/box"), Status::NotFound);
 
         let history: Value = c
-            .get("/api/v1/history/alice/box")
+            .get("/api/v1/report/alice/box/history")
             .dispatch()
             .into_json()
             .unwrap();
@@ -365,27 +370,27 @@ mod tests {
 
         // Deleting one user's entry leaves the other.
         let status = c
-            .delete("/api/v1/host/alice/box")
+            .delete("/api/v1/report/alice/box")
             .header(auth(TOKEN))
             .dispatch()
             .status();
         assert_eq!(status, Status::NoContent);
-        assert_eq!(get("/api/v1/host/alice/box"), Status::NotFound);
-        assert_eq!(get("/api/v1/host/bob/box"), Status::Ok);
+        assert_eq!(get("/api/v1/report/alice/box"), Status::NotFound);
+        assert_eq!(get("/api/v1/report/bob/box"), Status::Ok);
     }
 
     #[test]
     fn get_and_delete_host() {
         let c = client();
         assert_eq!(
-            c.get("/api/v1/host/a/x").dispatch().status(),
+            c.get("/api/v1/report/a/x").dispatch().status(),
             Status::NotFound
         );
         report(&c, "x", "a", 1, 2);
-        let host: Value = c.get("/api/v1/host/a/X").dispatch().into_json().unwrap();
+        let host: Value = c.get("/api/v1/report/a/X").dispatch().into_json().unwrap();
         assert_eq!(host["username"], "a");
         let delete = || {
-            c.delete("/api/v1/host/a/x")
+            c.delete("/api/v1/report/a/x")
                 .header(auth(TOKEN))
                 .dispatch()
                 .status()
@@ -422,12 +427,12 @@ mod tests {
         assert_eq!(put(vec![auth(TOKEN)]).status(), Status::Created);
 
         // Reads stay open; deletes need the token.
-        assert_eq!(c.get("/api/v1/host/a/h").dispatch().status(), Status::Ok);
+        assert_eq!(c.get("/api/v1/report/a/h").dispatch().status(), Status::Ok);
         assert_eq!(
-            c.delete("/api/v1/host/a/h").dispatch().status(),
+            c.delete("/api/v1/report/a/h").dispatch().status(),
             Status::Unauthorized
         );
-        assert_eq!(c.get("/api/v1/host/a/h").dispatch().status(), Status::Ok);
+        assert_eq!(c.get("/api/v1/report/a/h").dispatch().status(), Status::Ok);
     }
 
     #[test]
@@ -435,7 +440,7 @@ mod tests {
         let c = Client::tracked(build_with(figment().merge(("api_token", "other")))).unwrap();
         assert_eq!(report(&c, "h", "a", 1, 2), Status::Unauthorized);
         let status = c
-            .delete("/api/v1/host/a/h")
+            .delete("/api/v1/report/a/h")
             .header(auth("other"))
             .dispatch()
             .status();
@@ -449,9 +454,11 @@ mod tests {
             report(&c, "H", "a", free, 100);
         }
         report(&c, "other", "a", 1, 100);
-        c.delete("/api/v1/host/a/h").header(auth(TOKEN)).dispatch();
+        c.delete("/api/v1/report/a/h")
+            .header(auth(TOKEN))
+            .dispatch();
 
-        let get = |q: &str| c.get(format!("/api/v1/history/a/h{q}")).dispatch();
+        let get = |q: &str| c.get(format!("/api/v1/report/a/h/history{q}")).dispatch();
         let body: Value = get("").into_json().unwrap();
         assert_eq!(body["hostname"], "h");
         let frees: Vec<_> = body["entries"]
@@ -470,7 +477,7 @@ mod tests {
         assert_eq!(since["entries"].as_array().unwrap().len(), 1);
 
         let none: Value = c
-            .get("/api/v1/history/a/unknown")
+            .get("/api/v1/report/a/unknown/history")
             .dispatch()
             .into_json()
             .unwrap();
@@ -523,7 +530,7 @@ mod tests {
         let store = c.rocket().state::<Arc<Store>>().unwrap();
         assert_eq!(store.stored_len(), 0, "sweeper did not prune");
         assert_eq!(
-            c.get("/api/v1/host/a/gone").dispatch().status(),
+            c.get("/api/v1/report/a/gone").dispatch().status(),
             Status::NotFound
         );
     }
@@ -544,16 +551,20 @@ mod tests {
                 .cloned()
                 .collect()
         };
-        let host = "/v1/host/{username}/{hostname}";
-        let report = "/v1/report/{username}/{hostname}";
-        assert_eq!(codes(report, "put"), ["200", "201", "401", "422"]);
-        for old in ["/v1/hosts/{hostname}", "/v1/hosts/{hostname}/history"] {
+        let host = "/v1/report/{username}/{hostname}";
+        assert_eq!(codes(host, "put"), ["200", "201", "401", "422"]);
+        for old in [
+            "/v1/hosts/{hostname}",
+            "/v1/hosts/{hostname}/history",
+            "/v1/host/{username}/{hostname}",
+            "/v1/history/{username}/{hostname}",
+        ] {
             assert!(spec["paths"][old].is_null(), "{old} still documented");
         }
         assert_eq!(codes(host, "get"), ["200", "404", "422"]);
         assert_eq!(codes(host, "delete"), ["204", "401", "404", "422"]);
         assert_eq!(
-            codes("/v1/history/{username}/{hostname}", "get"),
+            codes("/v1/report/{username}/{hostname}/history", "get"),
             ["200", "422", "500"]
         );
         assert_eq!(codes("/v1/dashboard", "get"), ["200", "422"]);
@@ -561,7 +572,7 @@ mod tests {
 
         // Only the write routes declare the bearer token.
         let secured = |path: &str, method: &str| spec["paths"][path][method]["security"].is_array();
-        assert!(secured(report, "put") && secured(host, "delete"));
+        assert!(secured(host, "put") && secured(host, "delete"));
         assert!(!secured(host, "get"));
         assert_eq!(
             spec["components"]["securitySchemes"]["bearerAuth"]["scheme"],

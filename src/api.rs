@@ -255,7 +255,7 @@ pub fn report_host(
 /// (max 10000). History is kept for `history_retention_days` and is not
 /// affected by staleness or DELETE. Unknown hosts return an empty list.
 #[openapi(tag = "Dashboard")]
-#[get("/history/<username>/<hostname>?<since>&<limit>")]
+#[get("/report/<username>/<hostname>/history?<since>&<limit>")]
 pub fn host_history(
     username: &str,
     hostname: &str,
@@ -287,7 +287,7 @@ pub fn host_history(
 
 /// # Get the latest report of a single host
 #[openapi(tag = "Dashboard")]
-#[get("/host/<username>/<hostname>")]
+#[get("/report/<username>/<hostname>")]
 pub fn get_host(
     username: &str,
     hostname: &str,
@@ -304,7 +304,7 @@ pub fn get_host(
 ///
 /// The host's history is kept. Requires the API token.
 #[openapi(tag = "Reporting")]
-#[delete("/host/<username>/<hostname>")]
+#[delete("/report/<username>/<hostname>")]
 pub fn delete_host(
     _auth: WriteAuth,
     username: &str,

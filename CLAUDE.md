@@ -40,16 +40,16 @@ cargo fmt
 | Method | Path | Auth | Codes |
 |---|---|---|---|
 | PUT | `/api/v1/report/{username}/{hostname}` body `{free_ram_bytes, total_ram_bytes}` | token | 201 new/re-appeared, 200 updated, 401, 422 |
-| GET | `/api/v1/host/{username}/{hostname}` | | 200, 404, 422 |
-| DELETE | `/api/v1/host/{username}/{hostname}` | token | 204, 401, 404, 422 |
-| GET | `/api/v1/history/{username}/{hostname}?since=RFC3339&limit=N` | | 200, 422, 500 |
+| GET | `/api/v1/report/{username}/{hostname}` | | 200, 404, 422 |
+| DELETE | `/api/v1/report/{username}/{hostname}` | token | 204, 401, 404, 422 |
+| GET | `/api/v1/report/{username}/{hostname}/history?since=RFC3339&limit=N` | | 200, 422, 500 |
 | GET | `/api/v1/dashboard?limit=N` | | 200, 422 |
 | GET | `/api/health` | | 200 |
 
 Rules:
 - **Auth:** PUT and DELETE need `Authorization: Bearer <api_token>`. There is one global token, `tondorf.is.cool` (the user chose it), set in `Rocket.toml` / `ROCKET_API_TOKEN`. An empty token fails startup. Reads are open. Auth failures go through the catcher: `401 {"error":"unauthorized"}`.
 - **Memory and time:** memory values are bytes (u64), and timestamps are RFC 3339 UTC with microsecond precision.
-- **Identity:** a host is `{username}/{hostname}`. Every per-host route takes both as path segments (`/v1/<word>/{username}/{hostname}`), and the same machine reported by two users is two separate dashboard entries with separate histories. The response of `history` carries `username` and `hostname` at the top level, not per entry.
+- **Identity:** a host is `{username}/{hostname}`. Every per-host route lives under `/v1/report/{username}/{hostname}` (PUT, GET, DELETE, plus `/history`), and the same machine reported by two users is two separate dashboard entries with separate histories. The response of `history` carries `username` and `hostname` at the top level, not per entry.
 - **Hostnames:** 1-253 chars of `[A-Za-z0-9._-]`, case-insensitive, stored lowercased.
 - **Validation:** the username (path segment, percent-decoded, case-sensitive) must be non-empty after trimming and ≤256 bytes; an empty segment (`/report//h`) never matches the route and gives 404; `0 < total ≤ i64::MAX`; `free <= total`; unknown JSON fields are rejected.
 - **Ranking:** `free_ram_bytes` descending, ties broken by hostname then username ascending, `rank` starts at 1.
