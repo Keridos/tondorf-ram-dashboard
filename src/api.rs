@@ -11,7 +11,7 @@ use rocket::response::{self, Responder, status::NoContent};
 use rocket::serde::json::{self, Json};
 use rocket::{Request, State};
 use rocket_okapi::r#gen::OpenApiGenerator;
-use rocket_okapi::okapi::openapi3::{Info, OpenApi, RefOr, Responses};
+use rocket_okapi::okapi::openapi3::{Info, OpenApi, RefOr, Responses, Server};
 use rocket_okapi::openapi;
 use rocket_okapi::response::OpenApiResponderInner;
 use rocket_okapi::util::add_schema_response;
@@ -24,6 +24,10 @@ use crate::auth::WriteAuth;
 use crate::history::History;
 use crate::model::{Dashboard, ErrorBody, Host, HostHistory, HostReport, normalize_hostname};
 use crate::store::Store;
+
+/// Prefix for every path the service serves (routes, spec and Swagger UI).
+/// Must start with `/` and not end with one.
+pub const BASE_PATH: &str = "/api";
 
 pub const HISTORY_DEFAULT_LIMIT: usize = 100;
 pub const HISTORY_MAX_LIMIT: usize = 10_000;
@@ -345,6 +349,11 @@ pub fn spec_info() -> OpenApi {
             ),
             ..Default::default()
         },
+        // Spec paths are relative to the mount base.
+        servers: vec![Server {
+            url: BASE_PATH.to_owned(),
+            ..Default::default()
+        }],
         ..Default::default()
     }
 }

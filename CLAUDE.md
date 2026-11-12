@@ -12,13 +12,13 @@ There is no global Rust toolchain on this NixOS machine; wrap commands in
 ```sh
 ./run.sh                  # cargo run with DB at ~/.ramdashboard/data.sqlite; works from any cwd, args go to cargo
 cargo run                 # serves on port 63151 (from Rocket.toml), writes ./wuppp.db
-cargo test                # 17 tests, ~2.5s (one test sleeps to exercise the sweeper)
+cargo test                # 18 tests, ~2.5s (one test sleeps to exercise the sweeper)
 cargo clippy --all-targets
 cargo fmt
 ```
 
-- Spec: `GET /openapi.json` (generated from code, there is no handwritten spec)
-- Swagger UI: `/swagger-ui/`
+- Spec: `GET /api/openapi.json` (generated from code, there is no handwritten spec)
+- Swagger UI: `/api/swagger-ui/`
 
 ## Layout
 
@@ -42,7 +42,7 @@ cargo fmt
 | DELETE | `/api/v1/hosts/{hostname}` | token | 204, 401, 404, 422 |
 | GET | `/api/v1/hosts/{hostname}/history?since=RFC3339&limit=N` | | 200, 422, 500 |
 | GET | `/api/v1/dashboard?limit=N` | | 200, 422 |
-| GET | `/health` | | 200 |
+| GET | `/api/health` | | 200 |
 
 Rules:
 - **Auth:** PUT and DELETE need `Authorization: Bearer <api_token>`. There is one global token, `tondorf.is.cool` (the user chose it), set in `Rocket.toml` / `ROCKET_API_TOKEN`. An empty token fails startup. Reads are open. Auth failures go through the catcher: `401 {"error":"unauthorized"}`.
@@ -55,6 +55,7 @@ Rules:
 - **Stale hosts:** a host that hasn't reported for more than `stale_after_secs` (default 300) is hidden from all reads immediately. A background task on liftoff deletes stale hosts every `sweep_interval_secs` (default 30). Both must be ≥1, or startup fails.
 - **History:** every accepted PUT is appended to the `reports` table in `database_path` (default `wuppp.db`, relative to the working directory). The history endpoint returns entries newest first; `limit` defaults to 100, range 1-10000. Unknown hosts give an empty list, not 404. History survives staleness, DELETE and restarts. The sweeper deletes rows older than `history_retention_days` (default 30, 0 = keep forever). If writing history fails, the PUT still succeeds and the error is logged.
 - **Live state is still in memory:** the dashboard is empty after a restart until hosts report again. It is not rebuilt from history.
+- **Path prefix:** everything (routes, `/api/openapi.json`, `/api/swagger-ui/`) is mounted under `api::BASE_PATH` (`/api`). Rocket has no global prefix setting, so `build_with` passes it as the base of `mount_endpoints_and_merged_docs!`. The spec's paths are relative to that base (`/v1/...`, `/health`) and `servers: [{url: "/api"}]` carries the prefix. Unprefixed paths give the JSON 404.
 - **CORS:** every response sends `Access-Control-Allow-Origin: *`.
 
 ## Conventions
@@ -81,7 +82,7 @@ Rules:
 
 ## Current state
 
-- **Features:** all of the above is implemented, tested (17 passing) and clippy-clean.
+- **Features:** all of the above is implemented, tested (18 passing) and clippy-clean.
 - **Server copy:** the repo is copied to `y7v.de:~/wuppp`. That server has git but **no Rust toolchain**, so the service isn't built or running there yet.
 
 ## Roadmap / open items

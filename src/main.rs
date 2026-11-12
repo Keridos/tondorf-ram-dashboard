@@ -111,11 +111,11 @@ fn build() -> Rocket<Build> {
 fn build_with(figment: Figment) -> Rocket<Build> {
     let mut rocket = rocket::custom(figment);
     let settings = OpenApiSettings::default();
-    // Mounts the routes plus the merged spec at /openapi.json.
+    // Mounts the routes plus the merged spec at /api/openapi.json.
     mount_endpoints_and_merged_docs! {
-        rocket, "/", settings,
+        rocket, api::BASE_PATH, settings,
         "" => (vec![], api::spec_info()),
-        "/api/v1" => openapi_get_routes_spec![
+        "/v1" => openapi_get_routes_spec![
             settings: api::report_host, api::get_host, api::delete_host, api::host_history,
             api::dashboard
         ],
@@ -124,7 +124,7 @@ fn build_with(figment: Figment) -> Rocket<Build> {
 
     rocket
         .mount(
-            "/swagger-ui/",
+            format!("{}/swagger-ui/", api::BASE_PATH),
             make_swagger_ui(&SwaggerUIConfig {
                 url: "../openapi.json".to_owned(),
                 ..Default::default()
@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn openapi_spec_documents_all_routes() {
         let c = client();
-        let spec: Value = c.get("/openapi.json").dispatch().into_json().unwrap();
+        let spec: Value = c.get("/api/openapi.json").dispatch().into_json().unwrap();
         assert_eq!(spec["info"]["title"], "RAM Dashboard API");
 
         let codes = |path: &str, method: &str| -> Vec<String> {
@@ -467,15 +467,15 @@ mod tests {
                 .cloned()
                 .collect()
         };
-        let host = "/api/v1/hosts/{hostname}";
+        let host = "/v1/hosts/{hostname}";
         assert_eq!(codes(host, "put"), ["200", "201", "401", "422"]);
         assert_eq!(codes(host, "get"), ["200", "404", "422"]);
         assert_eq!(codes(host, "delete"), ["204", "401", "404", "422"]);
         assert_eq!(
-            codes("/api/v1/hosts/{hostname}/history", "get"),
+            codes("/v1/hosts/{hostname}/history", "get"),
             ["200", "422", "500"]
         );
-        assert_eq!(codes("/api/v1/dashboard", "get"), ["200", "422"]);
+        assert_eq!(codes("/v1/dashboard", "get"), ["200", "422"]);
         assert_eq!(codes("/health", "get"), ["200"]);
 
         // Only the write routes declare the bearer token.
@@ -502,9 +502,33 @@ mod tests {
     }
 
     #[test]
+    fn everything_is_under_api_prefix() {
+        let c = client();
+        for path in [
+            "/api/health",
+            "/api/openapi.json",
+            "/api/swagger-ui/index.html",
+        ] {
+            assert_eq!(c.get(path).dispatch().status(), Status::Ok, "{path}");
+        }
+        for path in [
+            "/health",
+            "/openapi.json",
+            "/swagger-ui/index.html",
+            "/v1/dashboard",
+        ] {
+            let res = c.get(path).dispatch();
+            assert_eq!(res.status(), Status::NotFound, "{path}");
+            assert_eq!(res.into_json::<Value>().unwrap()["error"], "not found");
+        }
+        let spec: Value = c.get("/api/openapi.json").dispatch().into_json().unwrap();
+        assert_eq!(spec["servers"][0]["url"], "/api");
+    }
+
+    #[test]
     fn swagger_ui_is_served() {
         let c = client();
-        let res = c.get("/swagger-ui/index.html").dispatch();
+        let res = c.get("/api/swagger-ui/index.html").dispatch();
         assert_eq!(res.status(), Status::Ok);
         assert_eq!(res.content_type(), Some(ContentType::HTML));
     }
