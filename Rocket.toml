@@ -7,3 +7,12 @@ port = 63151
 stale_after_secs = 300
 # How often stale hosts are deleted from memory.
 sweep_interval_secs = 30
+
+# Shared bearer token for PUT and DELETE (Authorization: Bearer <token>).
+# Override with ROCKET_API_TOKEN.
+api_token = "tondorf.is.cool"
+
+# SQLite file for the report history, relative to the working directory.
+database_path = "wuppp.db"
+# History older than this is deleted by the sweeper. 0 keeps it forever.
+history_retention_days = 30

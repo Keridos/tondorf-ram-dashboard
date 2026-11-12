@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{SubsecRound, Utc};
 use rocket::http::Status;
 use rocket::response::{self, Responder, status::NoContent};
 use rocket::serde::json::{self, Json};
@@ -18,8 +18,15 @@ use rocket_okapi::util::add_schema_response;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::model::{Dashboard, ErrorBody, Host, HostReport, normalize_hostname};
+use chrono::DateTime;
+
+use crate::auth::WriteAuth;
+use crate::history::History;
+use crate::model::{Dashboard, ErrorBody, Host, HostHistory, HostReport, normalize_hostname};
 use crate::store::Store;
+
+pub const HISTORY_DEFAULT_LIMIT: usize = 100;
+pub const HISTORY_MAX_LIMIT: usize = 10_000;
 
 // ---------------------------------------------------------------------------
 // Responders
@@ -94,6 +101,45 @@ impl OpenApiResponderInner for ApiError {
     }
 }
 
+/// `422 Unprocessable Entity` or `500 Internal Server Error` (database failure).
+#[derive(Debug)]
+pub enum HistoryError {
+    Invalid(String),
+    Database(rusqlite::Error),
+}
+
+impl From<Invalid> for HistoryError {
+    fn from(Invalid(e): Invalid) -> Self {
+        HistoryError::Invalid(e)
+    }
+}
+
+impl<'r> Responder<'r, 'static> for HistoryError {
+    fn respond_to(self, req: &'r Request<'_>) -> response::Result<'static> {
+        match self {
+            HistoryError::Invalid(e) => error_response(Status::UnprocessableEntity, e, req),
+            HistoryError::Database(e) => {
+                eprintln!("history query failed: {e}");
+                error_response(Status::InternalServerError, "database error".into(), req)
+            }
+        }
+    }
+}
+
+impl OpenApiResponderInner for HistoryError {
+    fn responses(r#gen: &mut OpenApiGenerator) -> rocket_okapi::Result<Responses> {
+        let mut responses = Invalid::responses(r#gen)?;
+        add_schema_response(
+            &mut responses,
+            500,
+            "application/json",
+            r#gen.json_schema::<ErrorBody>(),
+        )?;
+        describe(&mut responses, 500, "Database error");
+        Ok(responses)
+    }
+}
+
 /// Successful report: `201` if the host is new (or was stale), `200` otherwise.
 pub struct Reported {
     created: bool,
@@ -150,12 +196,16 @@ fn not_found(hostname: &str) -> ApiError {
 /// Idempotent upsert, called periodically by an agent on each host. Replaces
 /// the previous report for the hostname and sets `last_seen` to server time.
 /// Hostnames are 1-253 chars of `[A-Za-z0-9.-_]`, case-insensitive.
+/// Every accepted report is also appended to the host's history.
+/// Requires the API token.
 #[openapi(tag = "Reporting")]
 #[put("/hosts/<hostname>", format = "json", data = "<report>")]
 pub fn report_host(
+    _auth: WriteAuth,
     hostname: &str,
     report: Result<Json<HostReport>, json::Error<'_>>,
     store: &State<Arc<Store>>,
+    history: &State<Arc<History>>,
 ) -> Result<Reported, Invalid> {
     let hostname = parse_hostname(hostname)?;
     let report = report
@@ -168,10 +218,47 @@ pub fn report_host(
         username: report.username.trim().to_owned(),
         free_ram_bytes: report.free_ram_bytes,
         total_ram_bytes: report.total_ram_bytes,
-        last_seen: Utc::now(),
+        // Microsecond precision, matching what the history stores.
+        last_seen: Utc::now().trunc_subsecs(6),
     };
+    // A history failure shouldn't take the live dashboard down with it.
+    if let Err(e) = history.record(&host) {
+        eprintln!("failed to record history for '{}': {e}", host.hostname);
+    }
     let created = store.upsert(host.clone());
     Ok(Reported { created, host })
+}
+
+/// # Get the report history of a host
+///
+/// Stored reports, newest first. `since` (RFC 3339) returns only reports at or
+/// after that time; `limit` defaults to 100 (max 10000). History is kept for
+/// `history_retention_days` and is not affected by staleness or DELETE.
+/// Unknown hosts return an empty list.
+#[openapi(tag = "Dashboard")]
+#[get("/hosts/<hostname>/history?<since>&<limit>")]
+pub fn host_history(
+    hostname: &str,
+    since: Option<&str>,
+    limit: Option<usize>,
+    history: &State<Arc<History>>,
+) -> Result<Json<HostHistory>, HistoryError> {
+    let hostname = parse_hostname(hostname)?;
+    let limit = limit.unwrap_or(HISTORY_DEFAULT_LIMIT);
+    if !(1..=HISTORY_MAX_LIMIT).contains(&limit) {
+        return Err(Invalid(format!("limit must be 1-{HISTORY_MAX_LIMIT}")).into());
+    }
+    let since = since
+        .map(|s| {
+            DateTime::parse_from_rfc3339(s)
+                .map(|t| t.to_utc())
+                .map_err(|e| Invalid(format!("since must be RFC 3339: {e}")))
+        })
+        .transpose()?;
+    let entries = history
+        .for_host(&hostname, since, limit)
+        .map_err(HistoryError::Database)?;
+    Ok(Json(HostHistory { hostname, entries }))
 }
 
 /// # Get the latest report of a single host
@@ -186,9 +273,15 @@ pub fn get_host(hostname: &str, store: &State<Arc<Store>>) -> Result<Json<Host>,
 }
 
 /// # Remove a host from the dashboard
+///
+/// The host's history is kept. Requires the API token.
 #[openapi(tag = "Reporting")]
 #[delete("/hosts/<hostname>")]
-pub fn delete_host(hostname: &str, store: &State<Arc<Store>>) -> Result<NoContent, ApiError> {
+pub fn delete_host(
+    _auth: WriteAuth,
+    hostname: &str,
+    store: &State<Arc<Store>>,
+) -> Result<NoContent, ApiError> {
     let hostname = parse_hostname(hostname)?;
     if store.remove(&hostname, Utc::now()) {
         Ok(NoContent)
@@ -243,6 +336,9 @@ pub fn spec_info() -> OpenApi {
                  - All memory values are **bytes** (u64).\n\
                  - Timestamps are RFC 3339 in UTC.\n\
                  - Hostnames are case-insensitive and stored lowercased.\n\
+                 - PUT and DELETE require `Authorization: Bearer <api_token>`.\n\
+                 - Every report is kept in a SQLite history for \
+                 `history_retention_days` (default 30).\n\
                  - Hosts that haven't reported for `stale_after_secs` (default 300, \
                  `ROCKET_STALE_AFTER_SECS`) are removed automatically."
                     .to_owned(),

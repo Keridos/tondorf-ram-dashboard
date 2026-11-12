@@ -9,3 +9,4 @@ serde = { version = "1", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 rocket_okapi = { version = "0.9", features = ["swagger"] }
 schemars = { version = "0.8", features = ["chrono"] }
+rusqlite = { version = "0.42.0", features = ["bundled", "fallible_uint"] }

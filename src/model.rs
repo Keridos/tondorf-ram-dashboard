@@ -16,7 +16,7 @@ pub struct HostReport {
     pub username: String,
     /// Free (available) RAM in bytes. Must be <= `total_ram_bytes`.
     pub free_ram_bytes: u64,
-    /// Total RAM in bytes.
+    /// Total RAM in bytes (at most 2^63-1).
     #[schemars(range(min = 1))]
     pub total_ram_bytes: u64,
 }
@@ -43,6 +43,10 @@ impl HostReport {
         }
         if self.free_ram_bytes > self.total_ram_bytes {
             return Err("free_ram_bytes must not exceed total_ram_bytes".into());
+        }
+        // SQLite integers are signed 64-bit.
+        if self.total_ram_bytes > i64::MAX as u64 {
+            return Err(format!("total_ram_bytes must be at most {}", i64::MAX));
         }
         Ok(())
     }
@@ -100,4 +104,22 @@ pub struct Dashboard {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ErrorBody {
     pub error: String,
+}
+
+/// One past report of a host.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct HistoryEntry {
+    pub username: String,
+    pub free_ram_bytes: u64,
+    pub total_ram_bytes: u64,
+    /// Server time the report arrived.
+    pub reported_at: DateTime<Utc>,
+}
+
+/// Stored reports of a host, newest first.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct HostHistory {
+    /// Lowercased hostname.
+    pub hostname: String,
+    pub entries: Vec<HistoryEntry>,
 }

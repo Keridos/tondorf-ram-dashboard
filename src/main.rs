@@ -2,6 +2,8 @@
 extern crate rocket;
 
 mod api;
+mod auth;
+mod history;
 mod model;
 mod store;
 
@@ -19,6 +21,8 @@ use rocket_okapi::swagger_ui::{SwaggerUIConfig, make_swagger_ui};
 use rocket_okapi::{mount_endpoints_and_merged_docs, openapi_get_routes_spec};
 use serde::Deserialize;
 
+use auth::ApiToken;
+use history::History;
 use model::ErrorBody;
 use store::Store;
 
@@ -31,6 +35,12 @@ struct AppConfig {
     stale_after_secs: u64,
     /// How often the background sweeper deletes stale hosts from memory.
     sweep_interval_secs: u64,
+    /// Shared bearer token required for PUT and DELETE.
+    api_token: String,
+    /// SQLite file holding the report history (`:memory:` for none).
+    database_path: String,
+    /// History rows older than this are deleted. 0 keeps history forever.
+    history_retention_days: u64,
 }
 
 impl Default for AppConfig {
@@ -38,12 +48,23 @@ impl Default for AppConfig {
         Self {
             stale_after_secs: 300,
             sweep_interval_secs: 30,
+            api_token: "tondorf.is.cool".into(),
+            database_path: "wuppp.db".into(),
+            history_retention_days: 30,
         }
     }
 }
 
+/// Validated settings.
+struct Settings {
+    stale_after: TimeDelta,
+    sweep: Sweep,
+    api_token: String,
+    database_path: String,
+}
+
 impl AppConfig {
-    fn from_figment(figment: &Figment) -> Result<(TimeDelta, Duration), String> {
+    fn from_figment(figment: &Figment) -> Result<Settings, String> {
         let cfg: Self = figment.extract().map_err(|e| e.to_string())?;
         let stale_after = i64::try_from(cfg.stale_after_secs)
             .ok()
@@ -53,7 +74,27 @@ impl AppConfig {
         if cfg.sweep_interval_secs == 0 {
             return Err("sweep_interval_secs must be >= 1".into());
         }
-        Ok((stale_after, Duration::from_secs(cfg.sweep_interval_secs)))
+        if cfg.api_token.trim().is_empty() {
+            return Err("api_token must not be empty".into());
+        }
+        let retention = match cfg.history_retention_days {
+            0 => None,
+            days => Some(
+                i64::try_from(days)
+                    .ok()
+                    .and_then(TimeDelta::try_days)
+                    .ok_or("history_retention_days is too large")?,
+            ),
+        };
+        Ok(Settings {
+            stale_after,
+            sweep: Sweep {
+                every: Duration::from_secs(cfg.sweep_interval_secs),
+                retention,
+            },
+            api_token: cfg.api_token,
+            database_path: cfg.database_path,
+        })
     }
 }
 
@@ -75,7 +116,8 @@ fn build_with(figment: Figment) -> Rocket<Build> {
         rocket, "/", settings,
         "" => (vec![], api::spec_info()),
         "/api/v1" => openapi_get_routes_spec![
-            settings: api::report_host, api::get_host, api::delete_host, api::dashboard
+            settings: api::report_host, api::get_host, api::delete_host, api::host_history,
+            api::dashboard
         ],
         "" => openapi_get_routes_spec![settings: api::health],
     };
@@ -89,26 +131,47 @@ fn build_with(figment: Figment) -> Rocket<Build> {
             }),
         )
         .attach(AdHoc::try_on_ignite("Store", |rocket| async move {
-            match AppConfig::from_figment(rocket.figment()) {
-                Ok((stale_after, sweep_interval)) => {
-                    let store = Arc::new(Store::new(stale_after));
-                    Ok(rocket.manage(store).manage(SweepInterval(sweep_interval)))
-                }
+            let settings = match AppConfig::from_figment(rocket.figment()) {
+                Ok(s) => s,
                 Err(e) => {
                     eprintln!("invalid configuration: {e}");
-                    Err(rocket)
+                    return Err(rocket);
                 }
-            }
+            };
+            let history = match History::open(&settings.database_path) {
+                Ok(h) => Arc::new(h),
+                Err(e) => {
+                    eprintln!("cannot open database '{}': {e}", settings.database_path);
+                    return Err(rocket);
+                }
+            };
+            Ok(rocket
+                .manage(Arc::new(Store::new(settings.stale_after)))
+                .manage(history)
+                .manage(ApiToken(settings.api_token))
+                .manage(settings.sweep))
         }))
         .attach(AdHoc::on_liftoff("Stale host sweeper", |rocket| {
             Box::pin(async move {
                 let store = Arc::clone(rocket.state::<Arc<Store>>().unwrap());
-                let SweepInterval(every) = *rocket.state::<SweepInterval>().unwrap();
+                let history = Arc::clone(rocket.state::<Arc<History>>().unwrap());
+                let sweep = *rocket.state::<Sweep>().unwrap();
                 rocket::tokio::spawn(async move {
-                    let mut tick = rocket::tokio::time::interval(every);
+                    let mut tick = rocket::tokio::time::interval(sweep.every);
                     loop {
                         tick.tick().await;
-                        store.prune(Utc::now());
+                        let now = Utc::now();
+                        store.prune(now);
+                        if let Some(retention) = sweep.retention {
+                            let history = Arc::clone(&history);
+                            let res = rocket::tokio::task::spawn_blocking(move || {
+                                history.prune(now - retention)
+                            })
+                            .await;
+                            if let Ok(Err(e)) = res {
+                                eprintln!("history pruning failed: {e}");
+                            }
+                        }
                     }
                 });
             })
@@ -122,8 +185,13 @@ fn build_with(figment: Figment) -> Rocket<Build> {
         }))
 }
 
+/// Background sweeper settings.
 #[derive(Clone, Copy)]
-struct SweepInterval(Duration);
+struct Sweep {
+    every: Duration,
+    /// History retention; `None` keeps history forever.
+    retention: Option<TimeDelta>,
+}
 
 #[launch]
 fn rocket() -> _ {
@@ -132,21 +200,34 @@ fn rocket() -> _ {
 
 #[cfg(test)]
 mod tests {
-    use super::{build, build_with};
+    use super::build_with;
     use crate::store::Store;
     use rocket::error::ErrorKind;
-    use rocket::http::{ContentType, Status};
+    use rocket::figment::Figment;
+    use rocket::http::{ContentType, Header, Status};
     use rocket::local::blocking::Client;
     use rocket::serde::json::Value;
     use std::sync::Arc;
 
+    const TOKEN: &str = "tondorf.is.cool";
+
+    /// Rocket.toml settings, but with a throwaway database.
+    fn figment() -> Figment {
+        rocket::Config::figment().merge(("database_path", ":memory:"))
+    }
+
     fn client() -> Client {
-        Client::tracked(build()).expect("valid rocket instance")
+        Client::tracked(build_with(figment())).expect("valid rocket instance")
+    }
+
+    fn auth(token: &str) -> Header<'static> {
+        Header::new("Authorization", format!("Bearer {token}"))
     }
 
     fn report(c: &Client, host: &str, user: &str, free: u64, total: u64) -> Status {
         c.put(format!("/api/v1/hosts/{host}"))
             .header(ContentType::JSON)
+            .header(auth(TOKEN))
             .body(format!(
                 r#"{{"username":"{user}","free_ram_bytes":{free},"total_ram_bytes":{total}}}"#
             ))
@@ -200,9 +281,15 @@ mod tests {
             Status::UnprocessableEntity
         );
 
+        assert_eq!(
+            report(&c, "h", "a", 1, u64::MAX),
+            Status::UnprocessableEntity
+        );
+
         let res = c
             .put("/api/v1/hosts/h")
             .header(ContentType::JSON)
+            .header(auth(TOKEN))
             .body(r#"{"username":"a"}"#)
             .dispatch();
         assert_eq!(res.status(), Status::UnprocessableEntity);
@@ -220,14 +307,101 @@ mod tests {
         report(&c, "x", "a", 1, 2);
         let host: Value = c.get("/api/v1/hosts/X").dispatch().into_json().unwrap();
         assert_eq!(host["username"], "a");
+        let delete = || {
+            c.delete("/api/v1/hosts/x")
+                .header(auth(TOKEN))
+                .dispatch()
+                .status()
+        };
+        assert_eq!(delete(), Status::NoContent);
+        assert_eq!(delete(), Status::NotFound);
+    }
+
+    #[test]
+    fn writes_require_the_token() {
+        let c = client();
+        let put = |headers: Vec<Header<'static>>| {
+            let mut req = c
+                .put("/api/v1/hosts/h")
+                .header(ContentType::JSON)
+                .body(r#"{"username":"a","free_ram_bytes":1,"total_ram_bytes":2}"#);
+            for h in headers {
+                req = req.header(h);
+            }
+            req.dispatch()
+        };
+
+        for headers in [
+            vec![],
+            vec![auth("wrong")],
+            vec![Header::new("Authorization", TOKEN)], // missing "Bearer "
+        ] {
+            let res = put(headers);
+            assert_eq!(res.status(), Status::Unauthorized);
+            assert_eq!(res.content_type(), Some(ContentType::JSON));
+            let body: Value = res.into_json().unwrap();
+            assert_eq!(body["error"], "unauthorized");
+        }
+        assert_eq!(put(vec![auth(TOKEN)]).status(), Status::Created);
+
+        // Reads stay open; deletes need the token.
+        assert_eq!(c.get("/api/v1/hosts/h").dispatch().status(), Status::Ok);
         assert_eq!(
-            c.delete("/api/v1/hosts/x").dispatch().status(),
-            Status::NoContent
+            c.delete("/api/v1/hosts/h").dispatch().status(),
+            Status::Unauthorized
         );
-        assert_eq!(
-            c.delete("/api/v1/hosts/x").dispatch().status(),
-            Status::NotFound
-        );
+        assert_eq!(c.get("/api/v1/hosts/h").dispatch().status(), Status::Ok);
+    }
+
+    #[test]
+    fn token_is_configurable() {
+        let c = Client::tracked(build_with(figment().merge(("api_token", "other")))).unwrap();
+        assert_eq!(report(&c, "h", "a", 1, 2), Status::Unauthorized);
+        let status = c
+            .delete("/api/v1/hosts/h")
+            .header(auth("other"))
+            .dispatch()
+            .status();
+        assert_eq!(status, Status::NotFound);
+    }
+
+    #[test]
+    fn history_records_every_report() {
+        let c = client();
+        for free in [10, 20, 30] {
+            report(&c, "H", "a", free, 100);
+        }
+        report(&c, "other", "a", 1, 100);
+        c.delete("/api/v1/hosts/h").header(auth(TOKEN)).dispatch();
+
+        let get = |q: &str| c.get(format!("/api/v1/hosts/h/history{q}")).dispatch();
+        let body: Value = get("").into_json().unwrap();
+        assert_eq!(body["hostname"], "h");
+        let frees: Vec<_> = body["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["free_ram_bytes"].as_u64().unwrap())
+            .collect();
+        assert_eq!(frees, [30, 20, 10], "newest first, kept after DELETE");
+
+        let top: Value = get("?limit=1").into_json().unwrap();
+        assert_eq!(top["entries"].as_array().unwrap().len(), 1);
+
+        let newest = body["entries"][0]["reported_at"].as_str().unwrap();
+        let since: Value = get(&format!("?since={newest}")).into_json().unwrap();
+        assert_eq!(since["entries"].as_array().unwrap().len(), 1);
+
+        let none: Value = c
+            .get("/api/v1/hosts/unknown/history")
+            .dispatch()
+            .into_json()
+            .unwrap();
+        assert_eq!(none["entries"].as_array().unwrap().len(), 0);
+
+        for bad in ["?limit=0", "?limit=10001", "?since=yesterday"] {
+            assert_eq!(get(bad).status(), Status::UnprocessableEntity, "{bad}");
+        }
     }
 
     #[test]
@@ -240,10 +414,16 @@ mod tests {
 
     #[test]
     fn invalid_stale_config_fails_to_start() {
-        for (key, val) in [("stale_after_secs", 0), ("sweep_interval_secs", 0)] {
-            let figment = rocket::Config::figment().merge((key, val));
+        let bad: [(&str, Value); 4] = [
+            ("stale_after_secs", 0.into()),
+            ("sweep_interval_secs", 0.into()),
+            ("api_token", " ".into()),
+            ("database_path", "/nonexistent/dir/x.db".into()),
+        ];
+        for (key, val) in bad {
+            let figment = figment().merge((key, &val));
             match Client::tracked(build_with(figment)) {
-                Ok(_) => panic!("{key}=0 accepted"),
+                Ok(_) => panic!("{key}={val} accepted"),
                 // Inspecting the error marks it handled (Rocket panics on unhandled drop).
                 Err(e) => assert!(matches!(e.kind(), ErrorKind::FailedFairings(_))),
             }
@@ -252,7 +432,7 @@ mod tests {
 
     #[test]
     fn sweeper_removes_stale_hosts() {
-        let figment = rocket::Config::figment()
+        let figment = figment()
             .merge(("stale_after_secs", 1))
             .merge(("sweep_interval_secs", 1));
         let c = Client::tracked(build_with(figment)).unwrap();
@@ -280,16 +460,43 @@ mod tests {
         let codes = |path: &str, method: &str| -> Vec<String> {
             let op = &spec["paths"][path][method];
             assert!(op["summary"].is_string(), "{method} {path} has no summary");
-            op["responses"].as_object().unwrap().keys().cloned().collect()
+            op["responses"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect()
         };
-        assert_eq!(codes("/api/v1/hosts/{hostname}", "put"), ["200", "201", "422"]);
-        assert_eq!(codes("/api/v1/hosts/{hostname}", "get"), ["200", "404", "422"]);
-        assert_eq!(codes("/api/v1/hosts/{hostname}", "delete"), ["204", "404", "422"]);
+        let host = "/api/v1/hosts/{hostname}";
+        assert_eq!(codes(host, "put"), ["200", "201", "401", "422"]);
+        assert_eq!(codes(host, "get"), ["200", "404", "422"]);
+        assert_eq!(codes(host, "delete"), ["204", "401", "404", "422"]);
+        assert_eq!(
+            codes("/api/v1/hosts/{hostname}/history", "get"),
+            ["200", "422", "500"]
+        );
         assert_eq!(codes("/api/v1/dashboard", "get"), ["200", "422"]);
         assert_eq!(codes("/health", "get"), ["200"]);
 
+        // Only the write routes declare the bearer token.
+        let secured = |path: &str, method: &str| spec["paths"][path][method]["security"].is_array();
+        assert!(secured(host, "put") && secured(host, "delete"));
+        assert!(!secured(host, "get"));
+        assert_eq!(
+            spec["components"]["securitySchemes"]["bearerAuth"]["scheme"],
+            "bearer"
+        );
+
         let schemas = &spec["components"]["schemas"];
-        for name in ["HostReport", "Host", "RankedHost", "Dashboard", "ErrorBody"] {
+        for name in [
+            "HostReport",
+            "Host",
+            "RankedHost",
+            "Dashboard",
+            "ErrorBody",
+            "HostHistory",
+            "HistoryEntry",
+        ] {
             assert!(schemas[name].is_object(), "schema {name} missing");
         }
     }
