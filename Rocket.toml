@@ -6,7 +6,7 @@ address = "127.0.0.1"
 port = 63151
 
 # Hosts that haven't reported for this many seconds are removed.
-stale_after_secs = 300
+stale_after_secs = 600
 # How often stale hosts are deleted from memory.
 sweep_interval_secs = 30
 
