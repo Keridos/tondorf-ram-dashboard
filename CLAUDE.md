@@ -11,6 +11,7 @@ There is no global Rust toolchain on this NixOS machine; wrap commands in
 
 ```sh
 ./run.sh                  # cargo run with DB at ~/.ramdashboard/data.sqlite; works from any cwd, args go to cargo
+./restart.sh              # build, then (re)start detached on 63151; pid+log in ~/.ramdashboard/server.{pid,log}
 cargo run                 # serves on port 63151 (from Rocket.toml), writes ./wuppp.db
 cargo test                # 18 tests, ~2.5s (one test sleeps to exercise the sweeper)
 cargo clippy --all-targets
@@ -31,6 +32,7 @@ cargo fmt
 | `src/model.rs` | Request/response types with `JsonSchema`, validation, hostname normalization |
 | `src/store.rs` | In-memory `Store` (`RwLock<HashMap>`), ranking, stale filtering/pruning, unit tests |
 | `run.sh` | Launcher: cds to the repo, sets `ROCKET_DATABASE_PATH=~/.ramdashboard/data.sqlite`, runs cargo (via nix-shell if cargo isn't on PATH) |
+| `restart.sh` | Builds, stops the instance in `~/.ramdashboard/server.pid` (whole process group), starts `run.sh` detached via `setsid`, waits for `/api/health` |
 | `Rocket.toml` | `port`, `stale_after_secs`, `sweep_interval_secs`, `api_token`, `database_path`, `history_retention_days` |
 
 ## API
@@ -61,6 +63,7 @@ Rules:
 ## Conventions
 
 - **Commit at the end of every turn**, before waiting for user input (the user asked for this). Run tests, clippy and `cargo fmt` first. Commit messages end with a `Co-Authored-By` line.
+- **Restart the service after implementing something** (the user asked for this): run `./restart.sh` after the commit. It runs on port 63151 with the DB at `~/.ramdashboard/data.sqlite`.
 - Keep the generated spec accurate. If a route's possible status codes change, update the responder types in `api.rs` and the test `openapi_spec_documents_all_routes`.
 - Store methods take an explicit `now` so the unit tests don't need sleeps.
 - Tests build Rocket from `figment()` in `main.rs` tests, which sets `database_path = ":memory:"`. Don't use `build()` in tests, or they'll write `wuppp.db` into the repo.
