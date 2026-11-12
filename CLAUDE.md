@@ -10,6 +10,7 @@ There is no global Rust toolchain on this NixOS machine; wrap commands in
 `nix-shell -p cargo rustc gcc clippy rustfmt --run '...'` (gcc builds the bundled SQLite).
 
 ```sh
+./run.sh                  # cargo run with DB at ~/.ramdashboard/data.sqlite; works from any cwd, args go to cargo
 cargo run                 # serves on port 63151 (from Rocket.toml), writes ./wuppp.db
 cargo test                # 17 tests, ~2.5s (one test sleeps to exercise the sweeper)
 cargo clippy --all-targets
@@ -29,6 +30,7 @@ cargo fmt
 | `src/history.rs` | SQLite `History` (`Mutex<rusqlite::Connection>`): record, query, prune, unit tests |
 | `src/model.rs` | Request/response types with `JsonSchema`, validation, hostname normalization |
 | `src/store.rs` | In-memory `Store` (`RwLock<HashMap>`), ranking, stale filtering/pruning, unit tests |
+| `run.sh` | Launcher: cds to the repo, sets `ROCKET_DATABASE_PATH=~/.ramdashboard/data.sqlite`, runs cargo (via nix-shell if cargo isn't on PATH) |
 | `Rocket.toml` | `port`, `stale_after_secs`, `sweep_interval_secs`, `api_token`, `database_path`, `history_retention_days` |
 
 ## API
