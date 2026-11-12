@@ -104,8 +104,9 @@
 <script>
 "use strict";
 
-// Served at <base>/ (e.g. /api/); the API lives next to it.
-const BASE = location.pathname.replace(/\/?$/, "/");
+// The server fills in the API prefix (api::BASE_PATH). The URL is resolved
+// relative to the page, so the page also works below a proxy sub-path.
+const API = "." + "__API_BASE__" + "/v1/dashboard";
 const REFRESH_MS = 5000;
 
 const GiB = 1024 ** 3;
@@ -238,7 +239,7 @@ function status(text) { document.getElementById("status").textContent = text; }
 
 async function refresh() {
   try {
-    const res = await fetch(BASE + "v1/dashboard", { cache: "no-store" });
+    const res = await fetch(API, { cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     render(await res.json());
   } catch (e) {

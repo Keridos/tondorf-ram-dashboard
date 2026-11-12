@@ -29,7 +29,7 @@ cargo fmt
 | `src/api.rs` | Routes, custom responders with OpenAPI docs, `spec_info()` |
 | `src/auth.rs` | `WriteAuth` request guard (bearer token, constant-time compare) + its OpenAPI security scheme |
 | `src/history.rs` | SQLite `History` (`Mutex<rusqlite::Connection>`): record, query, prune, user colors (`users` table, random generation), unit tests |
-| `static/index.html` | The dashboard page (plain HTML/CSS/JS, no build step), embedded with `include_str!` and served at `/api/` |
+| `static/index.html` | The dashboard page (plain HTML/CSS/JS, no build step), embedded with `include_str!` and served at `/` |
 | `src/model.rs` | Request/response types with `JsonSchema`, validation, hostname normalization |
 | `src/store.rs` | In-memory `Store` (`RwLock<HashMap<(username, hostname), Host>>`), ranking, stale filtering/pruning, unit tests |
 | `run.sh` | Launcher: cds to the repo, sets `ROCKET_DATABASE_PATH=~/.ramdashboard/data.sqlite`, runs cargo (via nix-shell if cargo isn't on PATH) |
@@ -46,7 +46,7 @@ cargo fmt
 | GET | `/api/v1/report/{username}/{hostname}/history?since=RFC3339&limit=N` | | 200, 422, 500 |
 | GET | `/api/v1/dashboard?limit=N` | | 200, 422 |
 | GET | `/api/health` | | 200 |
-| GET | `/api/` (and `/api`) | | 200, the dashboard page; not in the spec |
+| GET | `/` | | 200, the dashboard page; not in the spec |
 
 Rules:
 - **Auth:** PUT and DELETE need `Authorization: Bearer <api_token>`. There is one global token, `tondorf.is.cool` (the user chose it), set in `Rocket.toml` / `ROCKET_API_TOKEN`. An empty token fails startup. Reads are open. Auth failures go through the catcher: `401 {"error":"unauthorized"}`.
@@ -60,9 +60,9 @@ Rules:
 - **Stale hosts:** a host that hasn't reported for more than `stale_after_secs` (default 300) is hidden from all reads immediately. A background task on liftoff deletes stale hosts every `sweep_interval_secs` (default 30). Both must be ≥1, or startup fails.
 - **History:** every accepted PUT is appended to the `reports` table in `database_path` (default `wuppp.db`, relative to the working directory). The history endpoint returns entries newest first; `limit` defaults to 100, range 1-10000. Unknown hosts give an empty list, not 404. History survives staleness, DELETE and restarts. The sweeper deletes rows older than `history_retention_days` (default 30, 0 = keep forever). If writing history fails, the PUT still succeeds and the error is logged.
 - **Live state is still in memory:** the dashboard is empty after a restart until hosts report again. It is not rebuilt from history.
-- **Path prefix:** everything (routes, `/api/openapi.json`, `/api/swagger-ui/`) is mounted under `api::BASE_PATH` (`/api`). Rocket has no global prefix setting, so `build_with` passes it as the base of `mount_endpoints_and_merged_docs!`. The spec's paths are relative to that base (`/v1/...`, `/health`) and `servers: [{url: "/api"}]` carries the prefix. Unprefixed paths give the JSON 404.
+- **Path prefix:** everything except the dashboard page at `/` (routes, `/api/openapi.json`, `/api/swagger-ui/`) is mounted under `api::BASE_PATH` (`/api`). Rocket has no global prefix setting, so `build_with` passes it as the base of `mount_endpoints_and_merged_docs!`. The spec's paths are relative to that base (`/v1/...`, `/health`) and `servers: [{url: "/api"}]` carries the prefix. Unprefixed paths give the JSON 404.
 - **User colors:** each user has one color (`#rrggbb`), stored in the `users` table of the same SQLite file and returned as `color` on every host. A report may send `"color": "#rrggbb"` (case-insensitive, stored lowercased; `null` = none) to set or change it, which also recolors the user's other hosts in memory. Without it, a new user gets a random color: random hue at fixed saturation 0.75 / lightness 0.55, picked from 12 random candidates as the one farthest in hue from existing users' colors. Colors are kept forever (not pruned) and survive restarts. If the color lookup fails, the report still succeeds with the requested or an unsaved random color.
-- **Frontend:** `static/index.html`, after `frontend-spec.png` (the mockup's colors were placeholders, its greys are kept: page `#404040`, row frame `#5e5e5e`, used segment `#646464`). Two columns, Users and Hosts, sorted by free RAM. Each row is a bar: user color = free RAM, grey = used RAM, the rest empty; bar length = total RAM relative to the largest total in that column. The Users column sums each user's hosts. A hostname reported by several users is labeled `host · user`. Label text is black or white depending on the bar color. Hover/focus shows a tooltip with GiB, % and last report. It polls `v1/dashboard` every 5 s relative to its own URL and builds all text with `textContent` (usernames are untrusted).
+- **Frontend:** `static/index.html`, after `frontend-spec.png` (the mockup's colors were placeholders, its greys are kept: page `#404040`, row frame `#5e5e5e`, used segment `#646464`). Two columns, Users and Hosts, sorted by free RAM. Each row is a bar: user color = free RAM, grey = used RAM, the rest empty; bar length = total RAM relative to the largest total in that column. The Users column sums each user's hosts. A hostname reported by several users is labeled `host · user`. Label text is black or white depending on the bar color. Hover/focus shows a tooltip with GiB, % and last report. It polls `./api/v1/dashboard` every 5 s; `api::frontend` substitutes `__API_BASE__` in the HTML with `BASE_PATH`, and the leading `.` keeps it working below a proxy sub-path and builds all text with `textContent` (usernames are untrusted).
 - **CORS:** every response sends `Access-Control-Allow-Origin: *`.
 
 ## Conventions

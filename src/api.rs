@@ -363,11 +363,11 @@ pub fn dashboard(
 // Routes (mounted under BASE_PATH)
 // ---------------------------------------------------------------------------
 
-/// The dashboard page (not part of the API spec). It fetches `v1/dashboard`
-/// relative to its own URL, so it must be served at `BASE_PATH/`.
+/// The dashboard page, mounted at `/` (outside `BASE_PATH` and the spec).
+/// It fetches `BASE_PATH/v1/dashboard`, filled in here.
 #[get("/")]
-pub fn frontend() -> RawHtml<&'static str> {
-    RawHtml(include_str!("../static/index.html"))
+pub fn frontend() -> RawHtml<String> {
+    RawHtml(include_str!("../static/index.html").replace("__API_BASE__", BASE_PATH))
 }
 
 #[derive(Serialize, JsonSchema)]

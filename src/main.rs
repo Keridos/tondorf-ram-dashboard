@@ -123,8 +123,8 @@ fn build_with(figment: Figment) -> Rocket<Build> {
     };
 
     rocket
-        // The dashboard page at /api/ (outside the spec).
-        .mount(format!("{}/", api::BASE_PATH), routes![api::frontend])
+        // The dashboard page at the root (outside /api and the spec).
+        .mount("/", routes![api::frontend])
         .mount(
             format!("{}/swagger-ui/", api::BASE_PATH),
             make_swagger_ui(&SwaggerUIConfig {
@@ -622,13 +622,15 @@ mod tests {
     #[test]
     fn frontend_is_served() {
         let c = client();
+        let res = c.get("/").dispatch();
+        assert_eq!(res.status(), Status::Ok);
+        assert_eq!(res.content_type(), Some(ContentType::HTML));
+        let html = res.into_string().unwrap();
+        assert!(html.contains(r#"const API = "." + "/api" + "/v1/dashboard";"#));
+        assert!(!html.contains("__API_BASE__"));
         for path in ["/api/", "/api"] {
-            let res = c.get(path).dispatch();
-            assert_eq!(res.status(), Status::Ok, "{path}");
-            assert_eq!(res.content_type(), Some(ContentType::HTML));
-            assert!(res.into_string().unwrap().contains("v1/dashboard"));
+            assert_eq!(c.get(path).dispatch().status(), Status::NotFound, "{path}");
         }
-        assert_eq!(c.get("/").dispatch().status(), Status::NotFound);
         let spec: Value = c.get("/api/openapi.json").dispatch().into_json().unwrap();
         assert!(
             spec["paths"]["/"].is_null(),
