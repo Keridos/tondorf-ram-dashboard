@@ -13,7 +13,7 @@ There is no global Rust toolchain on this NixOS machine; wrap commands in
 ./run.sh                  # cargo run with DB at ~/.ramdashboard/data.sqlite; works from any cwd, args go to cargo
 ./restart.sh              # build, then (re)start detached on 63151; pid+log in ~/.ramdashboard/server.{pid,log}
 cargo run                 # serves on port 63151 (from Rocket.toml), writes ./wuppp.db
-cargo test                # 28 tests, ~2.5s (one test sleeps to exercise the sweeper)
+cargo test                # 30 tests, ~2.5s (one test sleeps to exercise the sweeper)
 cargo clippy --all-targets
 cargo fmt
 ```
@@ -41,7 +41,7 @@ cargo fmt
 
 | Method | Path | Auth | Codes |
 |---|---|---|---|
-| PUT | `/api/v1/report/{username}/{hostname}` body `{free_ram_bytes, total_ram_bytes, color?}` | token | 201 new/re-appeared, 200 updated, 401, 422 |
+| PUT | `/api/v1/report/{username}/{hostname}` body `{free_ram_bytes, total_ram_bytes, color?, timeout_minutes?}` | token | 201 new/re-appeared, 200 updated, 401, 422 |
 | GET | `/api/v1/report/{username}/{hostname}` | | 200, 404, 422 |
 | DELETE | `/api/v1/report/{username}/{hostname}` | token | 204, 401, 404, 422 |
 | GET | `/api/v1/report/{username}/{hostname}/history?since=RFC3339&limit=N` | | 200, 422, 500 |
@@ -59,7 +59,7 @@ Rules:
 - **Ranking:** `free_ram_bytes` descending, ties broken by hostname then username ascending, `rank` starts at 1.
 - **Errors:** always `{"error": "..."}`, including Rocket's own catcher responses.
 - **`last_seen`:** set by the server when the report arrives.
-- **Stale hosts:** a host that hasn't reported for more than `stale_after_secs` (code default 300; `Rocket.toml` sets 600, i.e. 10 minutes, as the user asked) is hidden from all reads immediately. A background task on liftoff deletes stale hosts every `sweep_interval_secs` (default 30). Both must be ≥1, or startup fails.
+- **Stale hosts:** a host that hasn't reported for more than `stale_after_secs` (code default 300; `Rocket.toml` sets 600, i.e. 10 minutes, as the user asked) is hidden from all reads immediately. A report may set `timeout_minutes` (1-60, else 422) to use that instead for this host, for clients that can't report often; it is stored on the host (returned as `timeout_minutes`, `null` = default) and applies until the next report, so a report without it goes back to the default. The sweeper honors it too. A background task on liftoff deletes stale hosts every `sweep_interval_secs` (default 30). Both must be ≥1, or startup fails.
 - **History:** every accepted PUT is appended to the `reports` table in `database_path` (default `wuppp.db`, relative to the working directory). The history endpoint returns entries newest first; `limit` defaults to 100, range 1-10000. Unknown hosts give an empty list, not 404. History survives staleness, DELETE and restarts. The sweeper deletes rows older than `history_retention_days` (default 30, 0 = keep forever). If writing history fails, the PUT still succeeds and the error is logged.
 - **Live state is still in memory:** the dashboard is empty after a restart until hosts report again. It is not rebuilt from history.
 - **Path prefix:** everything except the dashboard page at `/` (routes, `/api/openapi.json`, `/api/swagger-ui/`) is mounted under `api::BASE_PATH` (`/api`). Rocket has no global prefix setting, so `build_with` passes it as the base of `mount_endpoints_and_merged_docs!`. The spec's paths are relative to that base (`/v1/...`, `/health`) and `servers: [{url: "/api"}]` carries the prefix. Unprefixed paths give the JSON 404.
@@ -93,7 +93,7 @@ Rules:
 
 ## Current state
 
-- **Features:** all of the above is implemented, tested (28 passing) and clippy-clean.
+- **Features:** all of the above is implemented, tested (30 passing) and clippy-clean.
 - **Server copy:** the repo is copied to `~/wuppp` on the deployment server. That server has git but **no Rust toolchain**, so the service isn't built or running there yet.
 
 ## Roadmap / open items

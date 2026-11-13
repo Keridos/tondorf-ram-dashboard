@@ -7,8 +7,10 @@ use crate::model::{Dashboard, Host, RankedHost};
 
 /// In-memory store holding the latest report per (username, hostname).
 ///
-/// Hosts whose `last_seen` is older than `stale_after` are treated as gone:
-/// reads ignore them immediately, and `prune` deletes them from memory.
+/// Hosts whose `last_seen` is older than their timeout are treated as gone:
+/// reads ignore them immediately, and `prune` deletes them from memory. The
+/// timeout is the host's own `timeout_minutes` if it reported one, otherwise
+/// `stale_after`.
 pub struct Store {
     hosts: RwLock<HashMap<Key, Host>>,
     stale_after: TimeDelta,
@@ -36,7 +38,11 @@ impl Store {
     }
 
     fn is_fresh(&self, host: &Host, now: DateTime<Utc>) -> bool {
-        now - host.last_seen <= self.stale_after
+        let timeout = host
+            .timeout_minutes
+            .map(|m| TimeDelta::minutes(m.into()))
+            .unwrap_or(self.stale_after);
+        now - host.last_seen <= timeout
     }
 
     /// Inserts or replaces a host. Returns `true` if the host was new
@@ -138,6 +144,7 @@ mod tests {
             free_ram_bytes: free,
             total_ram_bytes: 100,
             color: "#000000".into(),
+            timeout_minutes: None,
             last_seen,
         }
     }
@@ -170,6 +177,38 @@ mod tests {
         assert_eq!(store.prune(now), 1);
         assert_eq!(store.prune(now), 0);
         assert!(store.get("u", "new", now).is_some());
+    }
+
+    #[test]
+    fn per_host_timeout_overrides_the_default() {
+        let t0 = Utc::now();
+        let store = Store::new(secs(60));
+        let slow = Host {
+            timeout_minutes: Some(10),
+            ..host("slow", 1, t0)
+        };
+        store.upsert(slow.clone());
+        store.upsert(host("fast", 1, t0));
+
+        // Past the 60 s default, only the host with its own timeout is left.
+        let now = t0 + secs(61);
+        assert!(store.get("u", "fast", now).is_none());
+        assert!(store.get("u", "slow", now).is_some());
+        assert_eq!(store.prune(now), 1);
+        assert_eq!(store.dashboard(None, now).host_count, 1);
+
+        // 10 minutes is inclusive, like the default.
+        assert!(store.get("u", "slow", t0 + secs(600)).is_some());
+        let now = t0 + secs(601);
+        assert!(store.get("u", "slow", now).is_none());
+        assert_eq!(store.prune(now), 1);
+
+        // A report within its own timeout is an update, not a re-appearance.
+        assert!(store.upsert(slow.clone()));
+        assert!(!store.upsert(Host {
+            last_seen: t0 + secs(300),
+            ..slow
+        }));
     }
 
     #[test]

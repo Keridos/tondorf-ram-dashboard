@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_HOSTNAME_LEN: usize = 253;
 pub const MAX_USERNAME_LEN: usize = 256;
+pub const MIN_TIMEOUT_MINUTES: u32 = 1;
+pub const MAX_TIMEOUT_MINUTES: u32 = 60;
 
 /// Memory report sent by a host.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -22,6 +24,13 @@ pub struct HostReport {
     #[serde(default)]
     #[schemars(regex(pattern = r"^#[0-9A-Fa-f]{6}$"))]
     pub color: Option<String>,
+    /// Optional per-host timeout in minutes (1-60), for clients that can't
+    /// report often: the host stays on the dashboard until this long after its
+    /// last report, instead of the server's `stale_after_secs`. Applies until
+    /// the next report; a report without it goes back to the default.
+    #[serde(default)]
+    #[schemars(range(min = 1, max = 60))]
+    pub timeout_minutes: Option<u32>,
 }
 
 fn example_report() -> Value {
@@ -29,6 +38,7 @@ fn example_report() -> Value {
         "free_ram_bytes": 8_589_934_592u64,
         "total_ram_bytes": 17_179_869_184u64,
         "color": "#3d8bff",
+        "timeout_minutes": 30,
     })
 }
 
@@ -46,6 +56,13 @@ impl HostReport {
         }
         if let Some(color) = &self.color {
             normalize_color(color)?;
+        }
+        if let Some(minutes) = self.timeout_minutes
+            && !(MIN_TIMEOUT_MINUTES..=MAX_TIMEOUT_MINUTES).contains(&minutes)
+        {
+            return Err(format!(
+                "timeout_minutes must be {MIN_TIMEOUT_MINUTES}-{MAX_TIMEOUT_MINUTES}"
+            ));
         }
         Ok(())
     }
@@ -97,6 +114,9 @@ pub struct Host {
     pub total_ram_bytes: u64,
     /// The user's dashboard color, `#rrggbb` (same for all of a user's hosts).
     pub color: String,
+    /// Per-host timeout from the latest report, in minutes; `null` means the
+    /// server default (`stale_after_secs`).
+    pub timeout_minutes: Option<u32>,
     /// Server time of the latest report.
     pub last_seen: DateTime<Utc>,
 }

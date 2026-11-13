@@ -215,6 +215,9 @@ fn not_found(username: &str, hostname: &str) -> ApiError {
 /// non-empty after trimming and at most 256 bytes; it is case-sensitive.
 /// `color` (optional, `#rrggbb`) sets the user's dashboard color; a user
 /// without one gets a random color on their first report, stored for good.
+/// `timeout_minutes` (optional, 1-60) keeps the host on the dashboard that
+/// long after this report instead of the default `stale_after_secs`, for
+/// clients that can't report often.
 /// Every accepted report is also appended to the history.
 /// Requires the API token.
 #[openapi(tag = "Reporting")]
@@ -258,6 +261,7 @@ pub fn report_host(
         free_ram_bytes: report.free_ram_bytes,
         total_ram_bytes: report.total_ram_bytes,
         color,
+        timeout_minutes: report.timeout_minutes,
         // Microsecond precision, matching what the history stores.
         last_seen: Utc::now().trunc_subsecs(6),
     };

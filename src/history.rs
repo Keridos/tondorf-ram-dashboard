@@ -230,6 +230,7 @@ mod tests {
             free_ram_bytes: free,
             total_ram_bytes: 100,
             color: "#000000".into(),
+            timeout_minutes: None,
             last_seen: at,
         }
     }

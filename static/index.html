@@ -301,7 +301,8 @@ function render(dash) {
     tip: [
       h.hostname,
       `${fmt(h.free_ram_bytes)} free of ${fmt(h.total_ram_bytes)} (${pct(h.free_ram_bytes, h.total_ram_bytes)})`,
-      `user ${h.username} · last report ${ago(h.last_seen)}`,
+      `user ${h.username} · last report ${ago(h.last_seen)}` +
+        (h.timeout_minutes ? ` · timeout ${h.timeout_minutes} min` : ""),
     ],
   }));
 

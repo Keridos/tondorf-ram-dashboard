@@ -744,6 +744,35 @@ mod tests {
     }
 
     #[test]
+    fn report_accepts_an_optional_timeout() {
+        let c = client();
+        let put = |host: &str, extra: &str| {
+            c.put(format!("/api/v1/report/a/{host}"))
+                .header(ContentType::JSON)
+                .header(auth(TOKEN))
+                .body(format!(
+                    r#"{{"free_ram_bytes":1,"total_ram_bytes":2{extra}}}"#
+                ))
+                .dispatch()
+        };
+        for ok in [1, 30, 60] {
+            let res = put("h", &format!(r#","timeout_minutes":{ok}"#));
+            assert!(res.status().class().is_success(), "{ok}");
+            assert_eq!(res.into_json::<Value>().unwrap()["timeout_minutes"], ok);
+        }
+        for bad in ["0", "61", "-1", "1.5", r#""5""#] {
+            let res = put("h", &format!(r#","timeout_minutes":{bad}"#));
+            assert_eq!(res.status(), Status::UnprocessableEntity, "{bad}");
+        }
+
+        // Without it (or with null), the default applies again.
+        let res: Value = put("h", "").into_json().unwrap();
+        assert!(res["timeout_minutes"].is_null());
+        let res: Value = put("h", r#","timeout_minutes":null"#).into_json().unwrap();
+        assert!(res["timeout_minutes"].is_null());
+    }
+
+    #[test]
     fn swagger_ui_is_served() {
         let c = client();
         let res = c.get("/api/swagger-ui/index.html").dispatch();
