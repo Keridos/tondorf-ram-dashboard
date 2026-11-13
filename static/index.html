@@ -178,7 +178,6 @@
   .user { stroke-width: 1.5; opacity: 0.65; }
   .dashed { stroke-dasharray: 4 3; }
   .all-free { stroke: #fff; stroke-width: 2.5; }
-  .all-free-area { fill: rgb(255 255 255 / 0.1); stroke: none; }
   .all-total { stroke: #bdbdbd; stroke-width: 2; }
   .cross { stroke: #9a9a9a; stroke-width: 1; }
   .dot { stroke: var(--bg); stroke-width: 2; }
@@ -221,7 +220,7 @@
   <div class="chart-head">
     <h2 id="chart-h">Free vs total RAM, last 2 days</h2>
     <ul class="legend">
-      <li><svg viewBox="0 0 26 12" aria-hidden="true"><rect y="3" width="26" height="9" fill="rgb(255 255 255 / 0.1)"/><path class="series all-free" d="M1 3H25"/></svg>free, all</li>
+      <li><svg viewBox="0 0 26 12" aria-hidden="true"><path class="series all-free" d="M1 6H25"/></svg>free, all</li>
       <li><svg viewBox="0 0 26 12" aria-hidden="true"><path class="series all-total" d="M1 6H25"/></svg>total, all</li>
       <li><svg viewBox="0 0 26 12" aria-hidden="true"><path class="series user" stroke="#bdbdbd" d="M1 3H25"/><path class="series user dashed" stroke="#bdbdbd" d="M1 10H25"/></svg>per user: free / total (faded, in the user's color)</li>
     </ul>
@@ -557,9 +556,6 @@ function drawChart() {
   };
   const line = (vals) => runs(vals)
     .map((r) => "M" + r.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join("L")).join("");
-  const area = (vals) => runs(vals)
-    .map((r) => `M${r[0][0].toFixed(1)},${Y(0)}` + r.map(([x, y]) => `L${x.toFixed(1)},${y.toFixed(1)}`).join("") +
-      `L${r.at(-1)[0].toFixed(1)},${Y(0)}Z`).join("");
 
   // Users first (underneath), faded towards grey.
   for (const u of timeline.users) {
@@ -570,7 +566,6 @@ function drawChart() {
       svg.append(p);
     }
   }
-  svg.append(svgEl("path", { class: "all-free-area", d: area(all.free_ram_bytes) }));
   svg.append(svgEl("path", { class: "series all-total", d: line(all.total_ram_bytes) }));
   svg.append(svgEl("path", { class: "series all-free", d: line(all.free_ram_bytes) }));
 
