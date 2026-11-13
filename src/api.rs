@@ -24,8 +24,8 @@ use chrono::DateTime;
 use crate::auth::WriteAuth;
 use crate::history::{History, random_color};
 use crate::model::{
-    Dashboard, ErrorBody, Host, HostHistory, HostReport, normalize_color, normalize_hostname,
-    normalize_username,
+    Dashboard, ErrorBody, Host, HostHistory, HostReport, Series, Timeline, UserSeries,
+    normalize_color, normalize_hostname, normalize_username,
 };
 use crate::store::Store;
 
@@ -35,6 +35,15 @@ pub const BASE_PATH: &str = "/api";
 
 pub const HISTORY_DEFAULT_LIMIT: usize = 100;
 pub const HISTORY_MAX_LIMIT: usize = 10_000;
+
+pub const TIMELINE_DEFAULT_SPAN_SECS: u64 = 2 * 24 * 3600;
+pub const TIMELINE_MIN_SPAN_SECS: u64 = 60;
+pub const TIMELINE_MAX_SPAN_SECS: u64 = 30 * 24 * 3600;
+pub const TIMELINE_DEFAULT_POINTS: usize = 120;
+pub const TIMELINE_MAX_POINTS: usize = 1000;
+/// Offset of the log scale: sample ages are spaced evenly in `ln(age + 5 s)`,
+/// which reaches age 0 (now) and is close to `ln(age)` beyond a minute.
+pub const TIMELINE_AGE_OFFSET_SECS: f64 = 5.0;
 
 // ---------------------------------------------------------------------------
 // Responders
@@ -362,6 +371,86 @@ pub fn dashboard(
         return Err(Invalid("limit must be >= 1".into()));
     }
     Ok(Json(store.dashboard(limit, Utc::now())))
+}
+
+/// # Get free vs total RAM over time
+///
+/// Free and total RAM summed over all hosts, and per user, sampled from the
+/// history at `points` times (default 120, 2-1000) spread logarithmically
+/// over the last `span_secs` (default 172800 = 2 days, 60-2592000): the
+/// samples are evenly spaced in `ln(age + 5 s)`, from `span_secs` ago to now,
+/// so recent minutes get as many samples as past days. A host counts at
+/// a sample time if its latest report before it is within its timeout (as on
+/// the dashboard). Values are `null` where no host was live.
+#[openapi(tag = "Dashboard")]
+#[get("/timeline?<span_secs>&<points>")]
+pub fn timeline(
+    span_secs: Option<u64>,
+    points: Option<usize>,
+    store: &State<Arc<Store>>,
+    history: &State<Arc<History>>,
+) -> Result<Json<Timeline>, HistoryError> {
+    let span_secs = span_secs.unwrap_or(TIMELINE_DEFAULT_SPAN_SECS);
+    if !(TIMELINE_MIN_SPAN_SECS..=TIMELINE_MAX_SPAN_SECS).contains(&span_secs) {
+        return Err(Invalid(format!(
+            "span_secs must be {TIMELINE_MIN_SPAN_SECS}-{TIMELINE_MAX_SPAN_SECS}"
+        ))
+        .into());
+    }
+    let points = points.unwrap_or(TIMELINE_DEFAULT_POINTS);
+    if !(2..=TIMELINE_MAX_POINTS).contains(&points) {
+        return Err(Invalid(format!("points must be 2-{TIMELINE_MAX_POINTS}")).into());
+    }
+    let now = Utc::now().trunc_subsecs(6);
+    let samples = log_samples(now, span_secs, points);
+    let per_user = history
+        .timeline(&samples, store.stale_after())
+        .map_err(HistoryError::Database)?;
+    let colors = history.colors().map_err(HistoryError::Database)?;
+
+    let mut total = vec![None; samples.len()];
+    for user in per_user.values() {
+        for (sum, value) in total.iter_mut().zip(user) {
+            if let Some((free, all)) = *value {
+                let (f, t): &mut (u64, u64) = sum.get_or_insert((0, 0));
+                *f = f.saturating_add(free);
+                *t = t.saturating_add(all);
+            }
+        }
+    }
+    let users = per_user
+        .into_iter()
+        // Hosts seen just before the span but never live inside it.
+        .filter(|(_, values)| values.iter().any(Option::is_some))
+        .map(|(username, values)| UserSeries {
+            color: colors
+                .get(&username)
+                .cloned()
+                .unwrap_or_else(|| "#808080".into()),
+            username,
+            series: Series::from_samples(&values),
+        })
+        .collect();
+    Ok(Json(Timeline {
+        generated_at: now,
+        span_secs,
+        samples,
+        total: Series::from_samples(&total),
+        users,
+    }))
+}
+
+/// `points` sample times, oldest first: ages from `span_secs` down to 0,
+/// evenly spaced in `ln(age + TIMELINE_AGE_OFFSET_SECS)`.
+fn log_samples(now: DateTime<Utc>, span_secs: u64, points: usize) -> Vec<DateTime<Utc>> {
+    let k = TIMELINE_AGE_OFFSET_SECS;
+    let ratio = (span_secs as f64 + k) / k;
+    (0..points)
+        .map(|i| {
+            let age = k * ratio.powf(1.0 - i as f64 / (points - 1) as f64) - k;
+            now - chrono::TimeDelta::microseconds((age.max(0.0) * 1e6).round() as i64)
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

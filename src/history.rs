@@ -4,13 +4,14 @@
 //! full timeline. Rows older than the retention period are pruned by the sweeper.
 //! The `users` table holds each user's dashboard color; it is never pruned.
 
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{BuildHasher, RandomState};
 use std::sync::Mutex;
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::model::{HistoryEntry, Host};
+use crate::model::{HistoryEntry, Host, MAX_TIMEOUT_MINUTES};
 
 pub struct History {
     conn: Mutex<Connection>,
@@ -20,6 +21,18 @@ pub struct History {
 fn ts(t: DateTime<Utc>) -> String {
     t.to_rfc3339_opts(SecondsFormat::Micros, true)
 }
+
+/// Parses a stored timestamp; `col` is the column index for the error.
+fn parse_ts(s: &str, col: usize) -> rusqlite::Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .map(|t| t.with_timezone(&Utc))
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e))
+        })
+}
+
+/// Per sample time: summed `(free, total)` RAM, `None` if nothing was live.
+pub type Samples = Vec<Option<(u64, u64)>>;
 
 const SATURATION: f64 = 0.75;
 const LIGHTNESS: f64 = 0.55;
@@ -107,7 +120,8 @@ impl History {
                  username        TEXT    NOT NULL,
                  free_ram_bytes  INTEGER NOT NULL,
                  total_ram_bytes INTEGER NOT NULL,
-                 reported_at     TEXT    NOT NULL
+                 reported_at     TEXT    NOT NULL,
+                 timeout_minutes INTEGER
              );
              DROP INDEX IF EXISTS reports_host_time;
              CREATE INDEX IF NOT EXISTS reports_user_host_time
@@ -118,6 +132,13 @@ impl History {
                  color    TEXT NOT NULL
              );",
         )?;
+        // Databases created before per-host timeouts lack the column.
+        let has_timeout = conn
+            .prepare("SELECT 1 FROM pragma_table_info('reports') WHERE name = 'timeout_minutes'")?
+            .exists([])?;
+        if !has_timeout {
+            conn.execute("ALTER TABLE reports ADD COLUMN timeout_minutes INTEGER", [])?;
+        }
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -159,14 +180,16 @@ impl History {
 
     pub fn record(&self, host: &Host) -> rusqlite::Result<()> {
         self.conn.lock().unwrap().execute(
-            "INSERT INTO reports (hostname, username, free_ram_bytes, total_ram_bytes, reported_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO reports
+                 (hostname, username, free_ram_bytes, total_ram_bytes, reported_at, timeout_minutes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 host.hostname,
                 host.username,
                 host.free_ram_bytes,
                 host.total_ram_bytes,
                 ts(host.last_seen),
+                host.timeout_minutes,
             ],
         )?;
         Ok(())
@@ -195,18 +218,79 @@ impl History {
             Ok(HistoryEntry {
                 free_ram_bytes: row.get(0)?,
                 total_ram_bytes: row.get(1)?,
-                reported_at: DateTime::parse_from_rfc3339(&reported_at)
-                    .map_err(|e| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            2,
-                            rusqlite::types::Type::Text,
-                            Box::new(e),
-                        )
-                    })?
-                    .with_timezone(&Utc),
+                reported_at: parse_ts(&reported_at, 2)?,
             })
         })?
         .collect()
+    }
+
+    /// Per user, the summed free/total RAM of the user's hosts that were live
+    /// at each of the `samples` (ascending). A host is live at `t` if its latest
+    /// report at or before `t` is no older than that report's `timeout_minutes`,
+    /// or `default_timeout` if it had none (the same rule as the live store).
+    pub fn timeline(
+        &self,
+        samples: &[DateTime<Utc>],
+        default_timeout: TimeDelta,
+    ) -> rusqlite::Result<BTreeMap<String, Samples>> {
+        let (Some(&first), Some(&last)) = (samples.first(), samples.last()) else {
+            return Ok(BTreeMap::new());
+        };
+        let lookback = default_timeout.max(TimeDelta::minutes(MAX_TIMEOUT_MINUTES.into()));
+        let conn = self.conn.lock().unwrap();
+        let hosts = conn
+            .prepare_cached(
+                "SELECT DISTINCT username, hostname FROM reports
+                 WHERE reported_at >= ?1 AND reported_at <= ?2",
+            )?
+            .query_map(params![ts(first - lookback), ts(last)], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut latest = conn.prepare_cached(
+            "SELECT free_ram_bytes, total_ram_bytes, reported_at, timeout_minutes FROM reports
+             WHERE username = ?1 AND hostname = ?2 AND reported_at <= ?3
+             ORDER BY reported_at DESC, id DESC
+             LIMIT 1",
+        )?;
+        let mut out = BTreeMap::new();
+        for (username, hostname) in hosts {
+            let series: &mut Samples = out
+                .entry(username.clone())
+                .or_insert_with(|| vec![None; samples.len()]);
+            for (slot, &t) in series.iter_mut().zip(samples) {
+                let row = latest
+                    .query_row(params![username, hostname, ts(t)], |row| {
+                        Ok((
+                            row.get::<_, u64>(0)?,
+                            row.get::<_, u64>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<u32>>(3)?,
+                        ))
+                    })
+                    .optional()?;
+                let Some((free, total, at, timeout)) = row else {
+                    continue;
+                };
+                let timeout = timeout.map_or(default_timeout, |m| TimeDelta::minutes(m.into()));
+                if t - parse_ts(&at, 2)? <= timeout {
+                    let (f, tt) = slot.get_or_insert((0, 0));
+                    *f = f.saturating_add(free);
+                    *tt = tt.saturating_add(total);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every stored user color, by username.
+    pub fn colors(&self) -> rusqlite::Result<HashMap<String, String>> {
+        self.conn
+            .lock()
+            .unwrap()
+            .prepare_cached("SELECT username, color FROM users")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
     }
 
     /// Deletes reports older than `cutoff`. Returns how many were removed.
@@ -263,6 +347,41 @@ mod tests {
 
         assert_eq!(h.prune(t0 + s(1)).unwrap(), 3); // u/a@t0, u/b@t0, v/a@t0
         assert_eq!(h.for_host("u", "a", None, 100).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn timeline_sums_live_hosts_per_user() {
+        let t0 = Utc::now().trunc_subsecs(6);
+        let m = TimeDelta::minutes;
+        let h = History::open(":memory:").unwrap();
+        h.record(&host("a", 10, t0)).unwrap();
+        h.record(&host("b", 20, t0 + m(1))).unwrap();
+        h.record(&host("a", 30, t0 + m(2))).unwrap();
+        // Another user whose host keeps itself alive for 30 minutes.
+        let v = Host {
+            username: "v".into(),
+            timeout_minutes: Some(30),
+            ..host("c", 5, t0)
+        };
+        h.record(&v).unwrap();
+
+        let samples = [t0 - m(1), t0, t0 + m(1), t0 + m(2), t0 + m(8), t0 + m(20)];
+        let tl = h.timeline(&samples, m(5)).unwrap();
+        assert_eq!(
+            tl["u"],
+            [
+                None,            // before any report
+                Some((10, 100)), // a
+                Some((30, 200)), // a + b
+                Some((50, 200)), // a's newer report + b
+                None,            // both older than 5 minutes
+                None,
+            ]
+        );
+        let v = [None, Some((5, 100)), Some((5, 100))];
+        assert_eq!(tl["v"][..3], v);
+        assert_eq!(tl["v"][5], Some((5, 100)), "own 30 minute timeout");
+        assert!(h.timeline(&[], m(5)).unwrap().is_empty());
     }
 
     #[test]

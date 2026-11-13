@@ -31,6 +31,11 @@ impl Store {
         }
     }
 
+    /// Default timeout of hosts that didn't report their own.
+    pub fn stale_after(&self) -> TimeDelta {
+        self.stale_after
+    }
+
     /// Number of stored entries, including stale ones not yet pruned.
     #[cfg(test)]
     pub fn stored_len(&self) -> usize {

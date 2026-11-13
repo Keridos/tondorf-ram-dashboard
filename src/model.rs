@@ -166,3 +166,45 @@ pub struct HostHistory {
     pub hostname: String,
     pub entries: Vec<HistoryEntry>,
 }
+
+/// Free and total RAM per sample time, aligned with `Timeline::samples`;
+/// `null` where no host was live.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Series {
+    pub free_ram_bytes: Vec<Option<u64>>,
+    pub total_ram_bytes: Vec<Option<u64>>,
+}
+
+impl Series {
+    pub fn from_samples(samples: &[Option<(u64, u64)>]) -> Self {
+        Self {
+            free_ram_bytes: samples.iter().map(|s| s.map(|(f, _)| f)).collect(),
+            total_ram_bytes: samples.iter().map(|s| s.map(|(_, t)| t)).collect(),
+        }
+    }
+}
+
+/// The summed RAM of one user's live hosts over time.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct UserSeries {
+    pub username: String,
+    /// The user's dashboard color, `#rrggbb`.
+    pub color: String,
+    #[serde(flatten)]
+    pub series: Series,
+}
+
+/// Free vs total RAM of all hosts, sampled from the history.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Timeline {
+    pub generated_at: DateTime<Utc>,
+    /// How far back the samples go, in seconds.
+    pub span_secs: u64,
+    /// Sample times, oldest first (exactly `span_secs` ago) to newest (now),
+    /// evenly spaced in `ln(age + 5 s)`: dense near now, sparse in the past. Each series has one value per sample.
+    pub samples: Vec<DateTime<Utc>>,
+    /// Sum over all live hosts.
+    pub total: Series,
+    /// Per user, sorted by username.
+    pub users: Vec<UserSeries>,
+}

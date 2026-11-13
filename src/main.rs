@@ -121,7 +121,7 @@ fn build_with(figment: Figment) -> Rocket<Build> {
         "" => (vec![], api::spec_info()),
         "/v1" => openapi_get_routes_spec![
             settings: api::report_host, api::get_host, api::delete_host, api::host_history,
-            api::dashboard
+            api::dashboard, api::timeline
         ],
         "" => openapi_get_routes_spec![settings: api::health],
     };
@@ -223,7 +223,7 @@ mod tests {
     use rocket::figment::Figment;
     use rocket::http::{ContentType, Header, Status};
     use rocket::local::blocking::Client;
-    use rocket::serde::json::Value;
+    use rocket::serde::json::{Value, json};
     use std::sync::Arc;
 
     const TOKEN: &str = "tondorf.is.cool";
@@ -524,6 +524,43 @@ mod tests {
     }
 
     #[test]
+    fn timeline_sums_free_and_total_ram() {
+        let c = client();
+        let empty: Value = c.get("/api/v1/timeline").dispatch().into_json().unwrap();
+        assert_eq!(empty["span_secs"], 172800);
+        assert_eq!(empty["samples"].as_array().unwrap().len(), 120);
+        assert!(empty["users"].as_array().unwrap().is_empty());
+        assert!(empty["total"]["free_ram_bytes"][119].is_null());
+
+        report(&c, "a", "alice", 10, 100);
+        report(&c, "b", "alice", 20, 50);
+        report(&c, "c", "bob", 1, 4);
+        let tl: Value = c
+            .get("/api/v1/timeline?span_secs=600&points=3")
+            .dispatch()
+            .into_json()
+            .unwrap();
+        assert_eq!(tl["samples"].as_array().unwrap().len(), 3);
+        assert_eq!(tl["samples"][2], tl["generated_at"], "newest sample is now");
+        assert_eq!(tl["total"]["free_ram_bytes"], json!([null, null, 31]));
+        assert_eq!(tl["total"]["total_ram_bytes"], json!([null, null, 154]));
+        assert_eq!(tl["users"][0]["username"], "alice");
+        assert_eq!(tl["users"][0]["free_ram_bytes"][2], 30);
+        assert_eq!(tl["users"][1]["total_ram_bytes"][2], 4);
+        assert!(tl["users"][1]["color"].as_str().unwrap().starts_with('#'));
+
+        for bad in [
+            "span_secs=59",
+            "span_secs=2592001",
+            "points=1",
+            "points=1001",
+        ] {
+            let res = c.get(format!("/api/v1/timeline?{bad}")).dispatch();
+            assert_eq!(res.status(), Status::UnprocessableEntity, "{bad}");
+        }
+    }
+
+    #[test]
     fn unknown_route_returns_json_404() {
         let c = client();
         let res = c.get("/nope").dispatch();
@@ -604,6 +641,7 @@ mod tests {
             ["200", "422", "500"]
         );
         assert_eq!(codes("/v1/dashboard", "get"), ["200", "422"]);
+        assert_eq!(codes("/v1/timeline", "get"), ["200", "422", "500"]);
         assert_eq!(codes("/health", "get"), ["200"]);
 
         // Only the write routes declare the bearer token.
@@ -624,6 +662,8 @@ mod tests {
             "ErrorBody",
             "HostHistory",
             "HistoryEntry",
+            "Timeline",
+            "UserSeries",
         ] {
             assert!(schemas[name].is_object(), "schema {name} missing");
         }
