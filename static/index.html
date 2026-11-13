@@ -77,7 +77,15 @@
       0 0 calc(var(--o) * 1.5) #000;
   }
   .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .size { flex: none; font-variant-numeric: tabular-nums; }
+  /* Free/total: smaller and slightly dimmed, but still brighter than every
+     other grey on the page (brightest: --muted #c8c8c8). The outline is
+     inherited from .text, so it keeps the labels' thickness. */
+  .size {
+    flex: none;
+    font-size: 0.72em;
+    color: #dedede;
+    font-variant-numeric: tabular-nums;
+  }
 
   .status { grid-column: 1 / -1; text-align: center; color: var(--muted); margin: 0; }
   .status:empty { display: none; }
