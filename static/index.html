@@ -164,7 +164,7 @@
     margin: 0 auto;
     padding: clamp(1rem, 4vh, 2.5rem) clamp(1rem, 6vw, 8rem) 0;
   }
-  /* "300G Total   100G Free   1.800€ Wasted": the space left and
+  /* "300G Total   100G Free   1 800€ Wasted": the space left and
      right of the stats is twice the gap between neighbours
      (2fr | Total | 1fr | Free | 1fr | Wasted | 2fr). Same size as the
      Users/Hosts headings. */
@@ -529,9 +529,11 @@ for (const img of document.querySelectorAll("img[data-name]")) {
 // DDR5-6000 kit (~18.8-20 €/GB, netz-trends.de, elitegear.io); US trackers
 // average $15-20/GB (ramradar.app, memorypricechart.com, capitalandcompute.net).
 const EUR_PER_GIB = 18;
-const euros = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
-// What `bytes` of RAM cost, e.g. "1.098€".
-const wasted = (bytes) => `${euros.format((bytes / GiB) * EUR_PER_GIB)}€`;
+// Whole euros, thousands separated by a narrow no-break space (U+202F), since
+// "." is the decimal point here: "1 098€", "37 026€".
+const euros = (n) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, "\u202f");
+// What `bytes` of RAM cost, e.g. "1 098€".
+const wasted = (bytes) => `${euros((bytes / GiB) * EUR_PER_GIB)}€`;
 
 // Overall RAM of all live hosts: the "…G Total …G Free" line (whole GiB), what
 // the free RAM would cost ("…€ Wasted") and
