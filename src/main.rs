@@ -13,6 +13,7 @@ use std::time::Duration;
 use chrono::{TimeDelta, Utc};
 use rocket::fairing::AdHoc;
 use rocket::figment::Figment;
+use rocket::fs::{FileServer, relative};
 use rocket::http::{Header, Status};
 use rocket::serde::json::Json;
 use rocket::{Build, Request, Rocket};
@@ -128,6 +129,8 @@ fn build_with(figment: Figment) -> Rocket<Build> {
     rocket
         // The dashboard page at the root (outside /api and the spec).
         .mount("/", routes![api::frontend])
+        // Pictures for the page (see static/img/README.md).
+        .mount("/img", FileServer::from(relative!("static/img")))
         .mount(
             format!("{}/swagger-ui/", api::BASE_PATH),
             make_swagger_ui(&SwaggerUIConfig {
@@ -670,6 +673,15 @@ mod tests {
         for path in ["/api/", "/api"] {
             assert_eq!(c.get(path).dispatch().status(), Status::NotFound, "{path}");
         }
+
+        // Picture slots, served from static/img/ (missing files are a JSON 404).
+        assert!(
+            html.contains(r#"data-name="sam-sad""#) && html.contains(r#"data-name="sam-happy""#)
+        );
+        assert_eq!(c.get("/img/README.md").dispatch().status(), Status::Ok);
+        let res = c.get("/img/does-not-exist.png").dispatch();
+        assert_eq!(res.status(), Status::NotFound);
+        assert_eq!(res.content_type(), Some(ContentType::JSON));
         let spec: Value = c.get("/api/openapi.json").dispatch().into_json().unwrap();
         assert!(
             spec["paths"]["/"].is_null(),

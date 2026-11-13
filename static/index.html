@@ -25,12 +25,46 @@
     margin: 0 auto;
     padding: clamp(1rem, 4vh, 3rem) clamp(1rem, 6vw, 8rem) clamp(1.5rem, 8vh, 7rem);
   }
+  /* Title row: [sad pic] free()   Ram Altman   malloc() [happy pic] */
+  .masthead {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 1rem clamp(1rem, 3vw, 3rem);
+    max-width: 96rem;
+    margin: 0 auto;
+    padding: clamp(1.5rem, 6vh, 5rem) clamp(1rem, 6vw, 8rem) 0;
+  }
   h1 {
     margin: 0;
-    padding-top: clamp(1.5rem, 6vh, 5rem);
     text-align: center;
     font-weight: 600;
     font-size: clamp(2.5rem, 6vw, 5.5rem);
+  }
+  .side { display: flex; align-items: center; justify-content: center; gap: 1rem; }
+  .side code {
+    font-family: "DejaVu Sans Mono", Menlo, Consolas, monospace;
+    font-size: clamp(1.25rem, 2.4vw, 2.25rem);
+  }
+  .pic {
+    flex: none;
+    width: clamp(3.5rem, 7vw, 6.5rem);
+    aspect-ratio: 1;
+    border-radius: 50%;
+    border: 3px solid var(--frame);
+    object-fit: cover;
+    background: var(--used);
+  }
+  .pic.placeholder {
+    display: grid;
+    place-items: center;
+    font-size: clamp(1.75rem, 3.5vw, 3.25rem);
+    line-height: 1;
+  }
+  /* Narrow screens: title on its own line, free()/malloc() below it. */
+  @media (max-width: 44rem) {
+    .masthead { grid-template-columns: 1fr 1fr; }
+    h1 { grid-column: 1 / -1; grid-row: 1; }
   }
   h2 {
     margin: 0 0 0.6rem;
@@ -122,7 +156,17 @@
 </style>
 </head>
 <body>
-<h1>Ram Altman</h1>
+<header class="masthead">
+  <div class="side">
+    <img class="pic" data-name="sam-sad" data-fallback="😢" alt="Sad Sam Altman">
+    <code>free()</code>
+  </div>
+  <h1>Ram Altman</h1>
+  <div class="side">
+    <code>malloc()</code>
+    <img class="pic" data-name="sam-happy" data-fallback="😄" alt="Happy Sam Altman">
+  </div>
+</header>
 <main>
   <section aria-labelledby="users-h">
     <h2 id="users-h">Users</h2>
@@ -270,6 +314,25 @@ function render(dash) {
   fill("users", userItems);
   fill("hosts", hostItems);
   status(hosts.length ? "" : "No hosts are reporting right now.");
+}
+
+// Pictures live in static/img/ (served at img/); try the usual formats in
+// turn and fall back to an emoji placeholder if none exists.
+for (const img of document.querySelectorAll("img[data-name]")) {
+  const candidates = ["png", "jpg", "jpeg", "webp", "gif"].map((ext) => `img/${img.dataset.name}.${ext}`);
+  img.addEventListener("error", () => {
+    if (candidates.length) {
+      img.src = candidates.shift();
+      return;
+    }
+    const placeholder = document.createElement("span");
+    placeholder.className = "pic placeholder";
+    placeholder.setAttribute("role", "img");
+    placeholder.setAttribute("aria-label", img.alt);
+    placeholder.textContent = img.dataset.fallback;
+    img.replaceWith(placeholder);
+  });
+  img.src = candidates.shift();
 }
 
 function status(text) { document.getElementById("status").textContent = text; }
