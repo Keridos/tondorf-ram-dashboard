@@ -47,16 +47,17 @@
   .free, .used { flex: 0 1 auto; min-width: 0; }
   .free { background: var(--c); border-radius: 2px; }
   .used { background: var(--used); border-radius: 0 2px 2px 0; }
-  .label {
+  /* Text layer over the bar: name on the left, free RAM on the right. */
+  .text {
     position: absolute;
-    left: 0.9rem;
-    top: 50%;
-    transform: translateY(-50%);
-    max-width: calc(100% - 1.8rem);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0 0.9rem;
     pointer-events: none;
+    white-space: nowrap;
     font-size: calc(var(--row-h) * 0.5);
     line-height: 1;
     /* White with a black outline: readable on any bar color and on the grey
@@ -75,6 +76,8 @@
       calc(-1 * var(--o)) 0 0 #000,
       0 0 calc(var(--o) * 1.5) #000;
   }
+  .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .size { flex: none; font-variant-numeric: tabular-nums; }
 
   .status { grid-column: 1 / -1; text-align: center; color: var(--muted); margin: 0; }
   .status:empty { display: none; }
@@ -126,6 +129,8 @@ const RELOAD_GUARD_MS = 60000; // at most one auto-reload per minute
 const REFRESH_MS = 5000;
 
 const GiB = 1024 ** 3;
+// Bar text: free RAM, one decimal, e.g. "8.4G" (GiB).
+const short = (bytes) => (bytes / GiB).toFixed(1) + "G";
 const fmt = (bytes) => (bytes / GiB).toFixed(bytes < 10 * GiB ? 1 : 0) + " GiB";
 const pct = (free, total) => Math.round((free / total) * 100) + "%";
 
@@ -150,10 +155,16 @@ function row(item, scale) {
     seg.style.width = (bytes / scale) * 100 + "%";
     li.append(seg);
   }
-  const span = document.createElement("span");
-  span.className = "label";
-  span.textContent = item.label;
-  li.append(span);
+  const text = document.createElement("div");
+  text.className = "text";
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = item.label;
+  const size = document.createElement("span");
+  size.className = "size";
+  size.textContent = short(item.free);
+  text.append(label, size);
+  li.append(text);
 
   li.addEventListener("mouseenter", (e) => showTip(item, e));
   li.addEventListener("mousemove", moveTip);
