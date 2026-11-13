@@ -83,6 +83,18 @@
   /* Hosts flow top to bottom, then into the next column. */
   #hosts { display: block; column-gap: var(--col-gap); }
   #hosts .row { break-inside: avoid; margin-bottom: 0.3rem; }
+  /* Thin separator centered in the gap between Users and Hosts, only while
+     they are side by side (layoutColumns sets .beside). */
+  .beside { position: relative; }
+  .beside::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(var(--col-gap) / -2 - 0.5px);
+    width: 1px;
+    background: var(--frame);
+  }
 
   .row {
     position: relative;
@@ -414,6 +426,7 @@ function layoutColumns() {
   if (tracks > 1) tracks = hostCols + 1;
   mainEl.style.gridTemplateColumns = `repeat(${tracks}, minmax(0, 1fr))`;
   hostsEl.parentElement.style.gridColumn = tracks > 1 ? `2 / span ${hostCols}` : "";
+  hostsEl.parentElement.classList.toggle("beside", tracks > 1);
   hostsEl.style.columnCount = hostCols;
 }
 addEventListener("resize", layoutColumns);
