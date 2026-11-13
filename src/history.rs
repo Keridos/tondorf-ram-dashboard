@@ -321,6 +321,15 @@ impl History {
             .collect()
     }
 
+    /// Deletes every stored report of one user on one host. Returns how many
+    /// were removed. The user's color is kept.
+    pub fn delete_host(&self, username: &str, hostname: &str) -> rusqlite::Result<usize> {
+        self.conn.lock().unwrap().execute(
+            "DELETE FROM reports WHERE username = ?1 AND hostname = ?2",
+            params![username, hostname],
+        )
+    }
+
     /// Deletes reports older than `cutoff`. Returns how many were removed.
     pub fn prune(&self, cutoff: DateTime<Utc>) -> rusqlite::Result<usize> {
         self.conn
@@ -379,6 +388,26 @@ mod tests {
         assert_eq!(u.color, "#123456");
         assert_eq!(got[1].username, "v");
         assert_eq!(got[1].color, "", "no stored color yet");
+    }
+
+    #[test]
+    fn delete_host_removes_only_that_hosts_reports() {
+        let t0 = Utc::now().trunc_subsecs(6);
+        let h = History::open(":memory:").unwrap();
+        h.record(&host("a", 1, t0)).unwrap();
+        h.record(&host("a", 2, t0)).unwrap();
+        h.record(&host("b", 3, t0)).unwrap();
+        let other_user = Host {
+            username: "v".into(),
+            ..host("a", 4, t0)
+        };
+        h.record(&other_user).unwrap();
+
+        assert_eq!(h.delete_host("u", "a").unwrap(), 2);
+        assert_eq!(h.delete_host("u", "a").unwrap(), 0);
+        assert!(h.for_host("u", "a", None, 10).unwrap().is_empty());
+        assert_eq!(h.for_host("u", "b", None, 10).unwrap().len(), 1);
+        assert_eq!(h.for_host("v", "a", None, 10).unwrap().len(), 1);
     }
 
     #[test]

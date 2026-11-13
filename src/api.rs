@@ -157,6 +157,50 @@ impl OpenApiResponderInner for HistoryError {
     }
 }
 
+/// `404`, `422` or `500` (database failure): the errors of DELETE.
+#[derive(Debug)]
+pub enum DeleteError {
+    Api(ApiError),
+    Database(rusqlite::Error),
+}
+
+impl From<Invalid> for DeleteError {
+    fn from(e: Invalid) -> Self {
+        DeleteError::Api(e.into())
+    }
+}
+
+impl<'r> Responder<'r, 'static> for DeleteError {
+    fn respond_to(self, req: &'r Request<'_>) -> response::Result<'static> {
+        match self {
+            DeleteError::Api(e) => e.respond_to(req),
+            DeleteError::Database(e) => {
+                eprintln!("deleting history failed: {e}");
+                error_response(Status::InternalServerError, "database error".into(), req)
+            }
+        }
+    }
+}
+
+impl OpenApiResponderInner for DeleteError {
+    fn responses(r#gen: &mut OpenApiGenerator) -> rocket_okapi::Result<Responses> {
+        let mut responses = ApiError::responses(r#gen)?;
+        describe(
+            &mut responses,
+            404,
+            "Host not found (neither live nor in the history)",
+        );
+        add_schema_response(
+            &mut responses,
+            500,
+            "application/json",
+            r#gen.json_schema::<ErrorBody>(),
+        )?;
+        describe(&mut responses, 500, "Database error (nothing was deleted)");
+        Ok(responses)
+    }
+}
+
 /// Successful report: `201` if the host is new (or was stale), `200` otherwise.
 pub struct Reported {
     created: bool,
@@ -337,9 +381,11 @@ pub fn get_host(
         .ok_or_else(|| not_found(&username, &hostname))
 }
 
-/// # Remove a host from the dashboard
+/// # Delete a host and its history
 ///
-/// The host's history is kept. Requires the API token.
+/// Removes the host from the dashboard and deletes all of its stored reports.
+/// The user's color is kept. `204` if there was anything to delete (a live
+/// entry or history), `404` if neither exists. Requires the API token.
 #[openapi(tag = "Reporting")]
 #[delete("/report/<username>/<hostname>")]
 pub fn delete_host(
@@ -347,12 +393,18 @@ pub fn delete_host(
     username: &str,
     hostname: &str,
     store: &State<Arc<Store>>,
-) -> Result<NoContent, ApiError> {
+    history: &State<Arc<History>>,
+) -> Result<NoContent, DeleteError> {
     let (username, hostname) = parse_target(username, hostname)?;
-    if store.remove(&username, &hostname, Utc::now()) {
+    // History first: if it fails, the live entry stays too (nothing half-deleted).
+    let deleted_reports = history
+        .delete_host(&username, &hostname)
+        .map_err(DeleteError::Database)?;
+    let was_live = store.remove(&username, &hostname, Utc::now());
+    if was_live || deleted_reports > 0 {
         Ok(NoContent)
     } else {
-        Err(not_found(&username, &hostname))
+        Err(DeleteError::Api(not_found(&username, &hostname)))
     }
 }
 

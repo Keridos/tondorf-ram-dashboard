@@ -13,7 +13,7 @@ There is no global Rust toolchain on this NixOS machine; wrap commands in
 ./run.sh                  # cargo run with DB at ~/.ramdashboard/data.sqlite; works from any cwd, args go to cargo
 ./restart.sh              # build, then (re)start detached on 63151; pid+log in ~/.ramdashboard/server.{pid,log}
 cargo run                 # serves on port 63151 (from Rocket.toml), writes ./wuppp.db
-cargo test                # 34 tests, ~2.5s (one test sleeps to exercise the sweeper)
+cargo test                # 37 tests, ~2.5s (one test sleeps to exercise the sweeper)
 cargo clippy --all-targets
 cargo fmt
 ```
@@ -43,7 +43,7 @@ cargo fmt
 |---|---|---|---|
 | PUT | `/api/v1/report/{username}/{hostname}` body `{free_ram_bytes, total_ram_bytes, color?, timeout_minutes?}` | token | 201 new/re-appeared, 200 updated, 401, 422 |
 | GET | `/api/v1/report/{username}/{hostname}` | | 200, 404, 422 |
-| DELETE | `/api/v1/report/{username}/{hostname}` | token | 204, 401, 404, 422 |
+| DELETE | `/api/v1/report/{username}/{hostname}` | token | 204, 401, 404, 422, 500 |
 | GET | `/api/v1/report/{username}/{hostname}/history?since=RFC3339&limit=N` | | 200, 422, 500 |
 | GET | `/api/v1/dashboard?limit=N` | | 200, 422 |
 | GET | `/api/v1/timeline?span_secs=S&points=N` | | 200, 422, 500 |
@@ -61,7 +61,7 @@ Rules:
 - **Errors:** always `{"error": "..."}`, including Rocket's own catcher responses.
 - **`last_seen`:** set by the server when the report arrives.
 - **Stale hosts:** a host that hasn't reported for more than `stale_after_secs` (code default 300; `Rocket.toml` sets 600, i.e. 10 minutes, as the user asked) is hidden from all reads immediately. A report may set `timeout_minutes` (1-60, else 422) to use that instead for this host, for clients that can't report often; it is stored on the host (returned as `timeout_minutes`, `null` = default) and applies until the next report, so a report without it goes back to the default. The sweeper honors it too. A background task on liftoff deletes stale hosts every `sweep_interval_secs` (default 30). Both must be ≥1, or startup fails.
-- **History:** every accepted PUT is appended to the `reports` table in `database_path` (default `wuppp.db`, relative to the working directory). The history endpoint returns entries newest first; `limit` defaults to 100, range 1-10000. Unknown hosts give an empty list, not 404. History survives staleness, DELETE and restarts. The sweeper deletes rows older than `history_retention_days` (default 30, 0 = keep forever). If writing history fails, the PUT still succeeds and the error is logged.
+- **History:** every accepted PUT is appended to the `reports` table in `database_path` (default `wuppp.db`, relative to the working directory). The history endpoint returns entries newest first; `limit` defaults to 100, range 1-10000. Unknown hosts give an empty list, not 404. History survives staleness and restarts. DELETE removes the live entry **and all history rows** of that user/host (the user's color stays): 204 if either existed, 404 if neither; the history is deleted first, so a DB error (500) leaves everything in place. The sweeper deletes rows older than `history_retention_days` (default 30, 0 = keep forever). If writing history fails, the PUT still succeeds and the error is logged.
 - **Timeline:** `/v1/timeline` samples the history at `points` times (default 120, 2-1000) over `span_secs` (default 172800 = 2 days, 60-2592000), evenly spaced in `ln(age + 5 s)` (`TIMELINE_AGE_OFFSET_SECS`) from `span_secs` ago to exactly now. At each sample a host counts if its latest report at or before it is within that report's timeout (`timeout_minutes`, else `stale_after_secs`, same rule as the live store), so the `reports` table also stores `timeout_minutes` (added by `ALTER TABLE` on old databases). Returns sums over all hosts (`total`) and per user (`users`, with color; users never live in the span are left out); `null` where nothing was live. One indexed lookup per host per sample, ~40 ms for 2 days of real data. A DELETEd host still shows in the timeline until its timeout runs out.
 - **Live state is in memory, refilled at startup:** `restore_live_hosts` in `main.rs` (run in the Store fairing) loads the newest history row per (username, hostname) from the last `max(stale_after, 60 min)` via `History::latest_reports`, with stored colors and `timeout_minutes`, then prunes those already past their own timeout. So hosts that reported recently are back right after a restart, and their next report counts as an update (200), not new (201). A failing restore is logged and the server starts anyway; users without a stored color get one.
 - **Path prefix:** everything except the dashboard page at `/` (routes, `/api/openapi.json`, `/api/swagger-ui/`) is mounted under `api::BASE_PATH` (`/api`). Rocket has no global prefix setting, so `build_with` passes it as the base of `mount_endpoints_and_merged_docs!`. The spec's paths are relative to that base (`/v1/...`, `/health`) and `servers: [{url: "/api"}]` carries the prefix. Unprefixed paths give the JSON 404.
@@ -82,7 +82,7 @@ Rules:
 
 - **Route titles in the spec:** the doc comment must start with `/// # Title` for `rocket_okapi` to use it as the operation summary. Without `# `, everything goes into the description.
 - **Status codes in the spec:** `(Status, R)` and `Json<T>` are documented by okapi as a single 200/"default" response. Use custom responders that implement `OpenApiResponderInner` (`Reported`, `Invalid`, `ApiError`, `HistoryError`). The 401 comes from `WriteAuth`'s `OpenApiFromRequest::get_responses`.
-- **Error types:** `Invalid` (422), `ApiError` (404 + 422) and `HistoryError` (422 + 500) are separate types so each route documents only the codes it can return.
+- **Error types:** `Invalid` (422), `ApiError` (404 + 422), `HistoryError` (422 + 500) and `DeleteError` (404 + 422 + 500) are separate types so each route documents only the codes it can return.
 - **Edition 2024:** the okapi module `gen` must be written `rocket_okapi::r#gen`.
 - **Testing startup failures:** an unhandled `rocket::Error` panics when dropped. Tests that expect launch to fail must call `e.kind()`.
 - **`?limit=` parsing:** query `Option<T>` is infallible in Rocket, so `?limit=abc` is silently treated as no limit (or as the default 100 for history). That's why the ranges are checked by hand, and why the spec shows minimum 0.
@@ -96,7 +96,7 @@ Rules:
 
 ## Current state
 
-- **Features:** all of the above is implemented, tested (34 passing) and clippy-clean.
+- **Features:** all of the above is implemented, tested (37 passing) and clippy-clean.
 - **Server copy:** the repo is copied to `~/wuppp` on the deployment server. That server has git but **no Rust toolchain**, so the service isn't built or running there yet.
 
 ## Roadmap / open items

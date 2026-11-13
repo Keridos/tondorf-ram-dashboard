@@ -430,6 +430,67 @@ mod tests {
     }
 
     #[test]
+    fn delete_removes_the_host_and_its_history() {
+        let c = client();
+        let history = |host: &str| -> usize {
+            let v: Value = c
+                .get(format!("/api/v1/report/a/{host}/history"))
+                .dispatch()
+                .into_json()
+                .unwrap();
+            v["entries"].as_array().unwrap().len()
+        };
+        let delete = |host: &str| {
+            c.delete(format!("/api/v1/report/a/{host}"))
+                .header(auth(TOKEN))
+                .dispatch()
+                .status()
+        };
+        for free in [1, 2] {
+            report(&c, "gone", "a", free, 10);
+        }
+        report(&c, "kept", "a", 1, 10);
+        assert_eq!(history("gone"), 2);
+
+        assert_eq!(delete("GONE"), Status::NoContent);
+        assert_eq!(history("gone"), 0);
+        assert_eq!(
+            c.get("/api/v1/report/a/gone").dispatch().status(),
+            Status::NotFound
+        );
+        assert_eq!(history("kept"), 1, "other hosts untouched");
+        assert_eq!(delete("gone"), Status::NotFound, "nothing left");
+    }
+
+    #[test]
+    fn delete_also_works_for_a_host_that_is_only_in_the_history() {
+        // stale_after 1 s: the host drops off the dashboard, its history stays.
+        let figment = figment()
+            .merge(("stale_after_secs", 1))
+            .merge(("sweep_interval_secs", 3600));
+        let c = Client::tracked(build_with(figment)).unwrap();
+        report(&c, "old", "a", 1, 2);
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert_eq!(
+            c.get("/api/v1/report/a/old").dispatch().status(),
+            Status::NotFound
+        );
+
+        let status = c
+            .delete("/api/v1/report/a/old")
+            .header(auth(TOKEN))
+            .dispatch()
+            .status();
+        assert_eq!(status, Status::NoContent);
+        let v: Value = c
+            .get("/api/v1/report/a/old/history")
+            .dispatch()
+            .into_json()
+            .unwrap();
+        assert!(v["entries"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
     fn get_and_delete_host() {
         let c = client();
         assert_eq!(
@@ -522,9 +583,6 @@ mod tests {
             report(&c, "H", "a", free, 100);
         }
         report(&c, "other", "a", 1, 100);
-        c.delete("/api/v1/report/a/h")
-            .header(auth(TOKEN))
-            .dispatch();
 
         let get = |q: &str| c.get(format!("/api/v1/report/a/h/history{q}")).dispatch();
         let body: Value = get("").into_json().unwrap();
@@ -535,7 +593,7 @@ mod tests {
             .iter()
             .map(|e| e["free_ram_bytes"].as_u64().unwrap())
             .collect();
-        assert_eq!(frees, [30, 20, 10], "newest first, kept after DELETE");
+        assert_eq!(frees, [30, 20, 10], "newest first");
 
         let top: Value = get("?limit=1").into_json().unwrap();
         assert_eq!(top["entries"].as_array().unwrap().len(), 1);
@@ -739,7 +797,7 @@ mod tests {
             assert!(spec["paths"][old].is_null(), "{old} still documented");
         }
         assert_eq!(codes(host, "get"), ["200", "404", "422"]);
-        assert_eq!(codes(host, "delete"), ["204", "401", "404", "422"]);
+        assert_eq!(codes(host, "delete"), ["204", "401", "404", "422", "500"]);
         assert_eq!(
             codes("/v1/report/{username}/{hostname}/history", "get"),
             ["200", "422", "500"]
