@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ram Altman</title>
+<link rel="icon" id="favicon" type="image/jpeg" href="img/sam-sad.jpg">
 <style>
   :root {
     --bg: #404040;        /* page */
@@ -378,6 +379,7 @@ function render(dash) {
   hostCount = hosts.length;
   layoutColumns();
   status(hosts.length ? "" : "No hosts are reporting right now.");
+  updateFavicon(hosts);
 }
 
 // Users get one track of the main grid and Hosts the rest, as CSS columns of
@@ -418,6 +420,16 @@ for (const img of document.querySelectorAll("img[data-name]")) {
     img.replaceWith(placeholder);
   });
   img.src = candidates.shift();
+}
+
+// Favicon: happy Sam when less than half of all RAM is free (lots of malloc),
+// sad otherwise, including when no host is reporting.
+function updateFavicon(hosts) {
+  const free = hosts.reduce((sum, h) => sum + h.free_ram_bytes, 0);
+  const total = hosts.reduce((sum, h) => sum + h.total_ram_bytes, 0);
+  const href = total > 0 && free / total < 0.5 ? "img/sam-happy.jpg" : "img/sam-sad.jpg";
+  const link = document.getElementById("favicon");
+  if (link.getAttribute("href") !== href) link.setAttribute("href", href); // avoid refetching
 }
 
 function status(text) { document.getElementById("status").textContent = text; }
