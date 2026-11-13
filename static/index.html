@@ -316,10 +316,10 @@ function render(dash) {
   status(hosts.length ? "" : "No hosts are reporting right now.");
 }
 
-// Pictures live in static/img/ (served at img/); try the usual formats in
-// turn and fall back to an emoji placeholder if none exists.
+// Pictures are JPEGs in static/img/ (served at img/): <name>.jpg, else
+// <name>.jpeg, else an emoji placeholder.
 for (const img of document.querySelectorAll("img[data-name]")) {
-  const candidates = ["png", "jpg", "jpeg", "webp", "gif"].map((ext) => `img/${img.dataset.name}.${ext}`);
+  const candidates = ["jpg", "jpeg"].map((ext) => `img/${img.dataset.name}.${ext}`);
   img.addEventListener("error", () => {
     if (candidates.length) {
       img.src = candidates.shift();
