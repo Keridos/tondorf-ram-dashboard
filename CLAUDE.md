@@ -33,7 +33,7 @@ cargo fmt
 | `src/model.rs` | Request/response types with `JsonSchema`, validation, hostname normalization |
 | `src/store.rs` | In-memory `Store` (`RwLock<HashMap<(username, hostname), Host>>`), ranking, stale filtering/pruning, unit tests |
 | `run.sh` | Launcher: cds to the repo, sets `ROCKET_DATABASE_PATH=~/.ramdashboard/data.sqlite`, runs cargo (via nix-shell if cargo isn't on PATH) |
-| `restart.sh` | Builds, stops the instance in `~/.ramdashboard/server.pid` (whole process group), starts `run.sh` detached via `setsid`, waits for `/api/health` |
+| `restart.sh` | Builds first (a failed build leaves the old server running), then stops the instance in `~/.ramdashboard/server.pid` (whole process group) and starts the built `target/debug/ram-dashboard` directly, detached via `setsid`, with `ROCKET_DATABASE_PATH=~/.ramdashboard/data.sqlite`; waits for `/api/health`. Downtime is ~65 ms (it was ~1.5 s when the new process went through `run.sh`/nix-shell/cargo) |
 | `Rocket.toml` | `port`, `stale_after_secs`, `sweep_interval_secs`, `api_tokens`, `database_path`, `history_retention_days` |
 
 ## API
@@ -68,7 +68,7 @@ Rules:
 ## Conventions
 
 - **Commit at the end of every turn**, before waiting for user input (the user asked for this). Run tests, clippy and `cargo fmt` first. Commit messages end with a `Co-Authored-By` line.
-- **Restart the service after implementing something** (the user asked for this): run `./restart.sh` after the commit. It runs on port 63151 with the DB at `~/.ramdashboard/data.sqlite`.
+- **Restart the service after implementing something** (the user asked for this): run `./restart.sh` after the commit; it only swaps the process once the build has finished, so keep it that way to keep downtime short. It runs on port 63151 with the DB at `~/.ramdashboard/data.sqlite`.
 - Keep the generated spec accurate. If a route's possible status codes change, update the responder types in `api.rs` and the test `openapi_spec_documents_all_routes`.
 - Store methods take an explicit `now` so the unit tests don't need sleeps.
 - Tests build Rocket from `figment()` in `main.rs` tests, which sets `database_path = ":memory:"`. Don't use `build()` in tests, or they'll write `wuppp.db` into the repo.
