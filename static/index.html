@@ -356,6 +356,43 @@ function moveTip(e) {
 }
 function hideTip() { tip.hidden = true; }
 
+// pool-u-NNN-* machines (one per GPU node, reported twice: RAM and -vram)
+// would flood the Hosts column, so each user's pool-u-NNN-* hosts are shown
+// as one summed row, split into -vram and the rest. A "pool" with a single
+// host stays a normal row. Returns rows sorted like the API: free RAM
+// descending, then name.
+const POOL = /^(pool-u-\d{3})-(.+?)(-vram)?$/;
+function mergePools(hosts) {
+  const single = (h) => ({
+    name: h.hostname, username: h.username, color: h.color,
+    free: h.free_ram_bytes, total: h.total_ram_bytes,
+    lastSeen: h.last_seen, timeout: h.timeout_minutes, count: 1, members: [h.hostname],
+  });
+  const out = [];
+  const pools = new Map();
+  for (const h of hosts) {
+    const m = POOL.exec(h.hostname);
+    if (!m) { out.push(single(h)); continue; }
+    const name = `${m[1]}-*${m[3] ?? ""}`;
+    // Short label so it fits narrow columns: "u-012 ×15", "u-012 vram ×15".
+    const short = `${m[1].slice("pool-".length)}${m[3] ? " vram" : ""}`;
+    const key = `${h.username}\n${name}`;
+    const g = pools.get(key) ?? { ...single(h), name, short, free: 0, total: 0, count: 0, members: [], hosts: [] };
+    g.free += h.free_ram_bytes;
+    g.total += h.total_ram_bytes;
+    g.count += 1;
+    g.members.push(m[2]);
+    g.hosts.push(h);
+    if (h.last_seen > g.lastSeen) g.lastSeen = h.last_seen;
+    pools.set(key, g);
+  }
+  for (const g of pools.values()) {
+    if (g.count === 1) out.push(single(g.hosts[0]));
+    else out.push({ ...g, members: g.members.sort() });
+  }
+  return out.sort((a, b) => b.free - a.free || a.name.localeCompare(b.name));
+}
+
 function render(dash) {
   const hosts = dash.hosts;
   if (tip.dataset.owner !== "chart") hideTip(); // the hovered row is about to be replaced
@@ -379,21 +416,32 @@ function render(dash) {
       ],
     }));
 
-  // The same machine can be reported by two users; name the user then.
+  const entries = mergePools(hosts);
+  // The same name can come from two users; name the user then.
   const seen = new Map();
-  for (const h of hosts) seen.set(h.hostname, (seen.get(h.hostname) ?? 0) + 1);
-  const hostItems = hosts.map((h) => ({
-    label: seen.get(h.hostname) > 1 ? `${h.hostname} · ${h.username}` : h.hostname,
-    color: h.color,
-    free: h.free_ram_bytes,
-    total: h.total_ram_bytes,
-    tip: [
-      h.hostname,
-      `${fmt(h.free_ram_bytes)} free of ${fmt(h.total_ram_bytes)} (${pct(h.free_ram_bytes, h.total_ram_bytes)})`,
-      `user ${h.username} · last report ${ago(h.last_seen)}` +
-        (h.timeout_minutes ? ` · timeout ${h.timeout_minutes} min` : ""),
-    ],
-  }));
+  for (const e of entries) seen.set(e.name, (seen.get(e.name) ?? 0) + 1);
+  const hostItems = entries.map((e) => {
+    const base = e.count > 1 ? `${e.short} ×${e.count}` : e.name;
+    return {
+      label: seen.get(e.name) > 1 ? `${base} · ${e.username}` : base,
+      color: e.color,
+      free: e.free,
+      total: e.total,
+      tip: e.count > 1
+        ? [
+            `${e.name} (${e.count} hosts)`,
+            `${fmt(e.free)} free of ${fmt(e.total)} (${pct(e.free, e.total)})`,
+            `user ${e.username} · newest report ${ago(e.lastSeen)}`,
+            e.members.join(", "),
+          ]
+        : [
+            e.name,
+            `${fmt(e.free)} free of ${fmt(e.total)} (${pct(e.free, e.total)})`,
+            `user ${e.username} · last report ${ago(e.lastSeen)}` +
+              (e.timeout ? ` · timeout ${e.timeout} min` : ""),
+          ],
+    };
+  });
 
   // One scale for both columns (they are equally wide), so a pixel stands for
   // the same number of bytes on both sides. The largest user total is the
@@ -403,7 +451,7 @@ function render(dash) {
     document.getElementById(id).replaceChildren(...items.map((i) => row(i, scale)));
   fill("users", userItems);
   fill("hosts", hostItems);
-  hostCount = hosts.length;
+  hostCount = hostItems.length; // rows shown, after merging pools
   layoutColumns();
   status(hosts.length ? "" : "No hosts are reporting right now.");
   updateTotals(hosts);
