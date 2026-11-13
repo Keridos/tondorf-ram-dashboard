@@ -153,8 +153,10 @@ fn build_with(figment: Figment) -> Rocket<Build> {
                     return Err(rocket);
                 }
             };
+            let store = Store::new(settings.stale_after);
+            restore_live_hosts(&store, &history, settings.stale_after);
             Ok(rocket
-                .manage(Arc::new(Store::new(settings.stale_after)))
+                .manage(Arc::new(store))
                 .manage(history)
                 .manage(ApiTokens(settings.api_tokens))
                 .manage(settings.sweep))
@@ -200,6 +202,37 @@ fn build_with(figment: Figment) -> Rocket<Build> {
                 ));
             })
         }))
+}
+
+/// Refills the in-memory store from the history, so hosts that reported
+/// recently are back on the dashboard right after a restart instead of only
+/// after their next report. Failures are logged; the server starts anyway.
+fn restore_live_hosts(store: &Store, history: &History, default_timeout: TimeDelta) {
+    let now = Utc::now();
+    // No host can be live longer ago than the longest possible timeout.
+    let lookback = default_timeout.max(TimeDelta::minutes(model::MAX_TIMEOUT_MINUTES.into()));
+    let hosts = match history.latest_reports(now - lookback) {
+        Ok(hosts) => hosts,
+        Err(e) => {
+            eprintln!("could not restore hosts from history: {e}");
+            return;
+        }
+    };
+    for mut host in hosts {
+        if host.color.is_empty() {
+            // History from before user colors: give the user one now.
+            host.color = history
+                .user_color(&host.username, None)
+                .unwrap_or_else(|_| history::random_color());
+        }
+        store.upsert(host);
+    }
+    // Drop the ones already past their own timeout.
+    store.prune(now);
+    let restored = store.dashboard(None, now).host_count;
+    if restored > 0 {
+        println!("restored {restored} live host(s) from history");
+    }
 }
 
 /// Background sweeper settings.
@@ -585,6 +618,77 @@ mod tests {
                 Err(e) => assert!(matches!(e.kind(), ErrorKind::FailedFairings(_))),
             }
         }
+    }
+
+    #[test]
+    fn restart_restores_live_hosts_from_history() {
+        use crate::history::History;
+        use crate::model::Host;
+        use chrono::{SubsecRound, TimeDelta, Utc};
+
+        let dir = std::env::temp_dir().join(format!("wuppp-restore-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("restore.db");
+        let db = db.to_str().unwrap().to_owned();
+        let with_db = || figment().merge(("database_path", &db));
+
+        // First run: a normal report.
+        {
+            let c = Client::tracked(build_with(with_db())).unwrap();
+            let body = r##"{"free_ram_bytes":1,"total_ram_bytes":2,"color":"#abcdef","timeout_minutes":45}"##;
+            let res = c
+                .put("/api/v1/report/alice/box")
+                .header(ContentType::JSON)
+                .header(auth(TOKEN))
+                .body(body)
+                .dispatch();
+            assert_eq!(res.status(), Status::Created);
+        }
+
+        // Older history, written directly: one host still inside its own
+        // 30 min timeout, one past the 10 min default.
+        let now = Utc::now().trunc_subsecs(6);
+        let old = |user: &str, mins: i64, timeout| Host {
+            hostname: "box".into(),
+            username: user.into(),
+            free_ram_bytes: 5,
+            total_ram_bytes: 10,
+            color: String::new(),
+            timeout_minutes: timeout,
+            last_seen: now - TimeDelta::minutes(mins),
+        };
+        let history = History::open(&db).unwrap();
+        history.record(&old("bob", 20, Some(30))).unwrap();
+        history.record(&old("carol", 20, None)).unwrap();
+        drop(history);
+
+        // Second run: live hosts are back without reporting again.
+        let c = Client::tracked(build_with(with_db())).unwrap();
+        let get = |user: &str| c.get(format!("/api/v1/report/{user}/box")).dispatch();
+        let alice: Value = get("alice").into_json().unwrap();
+        assert_eq!(alice["color"], "#abcdef");
+        assert_eq!(alice["timeout_minutes"], 45);
+        let bob: Value = get("bob").into_json().unwrap();
+        assert_eq!(bob["timeout_minutes"], 30);
+        assert!(
+            bob["color"].as_str().unwrap().starts_with('#'),
+            "got a color"
+        );
+        assert_eq!(get("carol").status(), Status::NotFound, "past its timeout");
+        let dash: Value = c.get("/api/v1/dashboard").dispatch().into_json().unwrap();
+        assert_eq!(dash["host_count"], 2);
+
+        // The next report updates rather than "creates" a restored host.
+        let status = c
+            .put("/api/v1/report/alice/box")
+            .header(ContentType::JSON)
+            .header(auth(TOKEN))
+            .body(r#"{"free_ram_bytes":1,"total_ram_bytes":2}"#)
+            .dispatch()
+            .status();
+        assert_eq!(status, Status::Ok);
+        drop(c);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -283,6 +283,34 @@ impl History {
         Ok(out)
     }
 
+    /// The newest report of every (username, hostname) that reported at or
+    /// after `since`, as live hosts with the user's stored color (empty if the
+    /// user has none). Used to refill the in-memory store at startup.
+    pub fn latest_reports(&self, since: DateTime<Utc>) -> rusqlite::Result<Vec<Host>> {
+        let conn = self.conn.lock().unwrap();
+        // SQLite takes the bare columns from the row that has the MAX().
+        let mut stmt = conn.prepare(
+            "SELECT r.username, r.hostname, r.free_ram_bytes, r.total_ram_bytes,
+                    MAX(r.reported_at), r.timeout_minutes, COALESCE(u.color, '')
+             FROM reports r LEFT JOIN users u ON u.username = r.username
+             WHERE r.reported_at >= ?1
+             GROUP BY r.username, r.hostname",
+        )?;
+        stmt.query_map([ts(since)], |row| {
+            let reported_at: String = row.get(4)?;
+            Ok(Host {
+                username: row.get(0)?,
+                hostname: row.get(1)?,
+                free_ram_bytes: row.get(2)?,
+                total_ram_bytes: row.get(3)?,
+                last_seen: parse_ts(&reported_at, 4)?,
+                timeout_minutes: row.get(5)?,
+                color: row.get(6)?,
+            })
+        })?
+        .collect()
+    }
+
     /// Every stored user color, by username.
     pub fn colors(&self) -> rusqlite::Result<HashMap<String, String>> {
         self.conn
@@ -317,6 +345,40 @@ mod tests {
             timeout_minutes: None,
             last_seen: at,
         }
+    }
+
+    #[test]
+    fn latest_reports_per_user_and_host() {
+        let t0 = Utc::now().trunc_subsecs(6);
+        let s = TimeDelta::seconds;
+        let h = History::open(":memory:").unwrap();
+        let at = |user: &str, name: &str, free, t, timeout| Host {
+            username: user.into(),
+            timeout_minutes: timeout,
+            ..host(name, free, t)
+        };
+        h.record(&at("u", "a", 1, t0, None)).unwrap();
+        h.record(&at("u", "a", 2, t0 + s(20), Some(30))).unwrap();
+        h.record(&at("u", "a", 3, t0 + s(10), None)).unwrap(); // older, recorded later
+        h.record(&at("v", "a", 4, t0 + s(5), None)).unwrap();
+        h.record(&at("u", "old", 5, t0 - s(100), None)).unwrap();
+        h.user_color("u", Some("#123456")).unwrap();
+
+        let mut got = h.latest_reports(t0).unwrap();
+        got.sort_by(|x, y| x.username.cmp(&y.username));
+        assert_eq!(
+            got.len(),
+            2,
+            "one per user/host, 'old' is before the cutoff"
+        );
+        let u = &got[0];
+        assert_eq!((u.username.as_str(), u.hostname.as_str()), ("u", "a"));
+        assert_eq!(u.free_ram_bytes, 2, "the newest report wins");
+        assert_eq!(u.last_seen, t0 + s(20));
+        assert_eq!(u.timeout_minutes, Some(30));
+        assert_eq!(u.color, "#123456");
+        assert_eq!(got[1].username, "v");
+        assert_eq!(got[1].color, "", "no stored color yet");
     }
 
     #[test]
