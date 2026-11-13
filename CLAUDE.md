@@ -49,7 +49,7 @@ cargo fmt
 | GET | `/` | | 200, the dashboard page; not in the spec |
 
 Rules:
-- **Auth:** PUT and DELETE need `Authorization: Bearer <token>`, where the token is any one of `api_tokens`: `tondorf.is.cool` and `tondorf.ist.cool` (the user chose both), set in `Rocket.toml` / `ROCKET_API_TOKENS='["a","b"]'`. All tokens are compared in constant time, without stopping at a match. An empty list or an empty token fails startup. Reads are open. Auth failures go through the catcher: `401 {"error":"unauthorized"}`.
+- **Auth:** PUT and DELETE need `Authorization: Bearer <token>`, where the token is any one of `api_tokens` (values chosen by the user), set in `Rocket.toml` / `ROCKET_API_TOKENS='["a","b"]'`. All tokens are compared in constant time, without stopping at a match. An empty list or an empty token fails startup. Reads are open. Auth failures go through the catcher: `401 {"error":"unauthorized"}`.
 - **Memory and time:** memory values are bytes (u64), and timestamps are RFC 3339 UTC with microsecond precision.
 - **Identity:** a host is `{username}/{hostname}`. Every per-host route lives under `/v1/report/{username}/{hostname}` (PUT, GET, DELETE, plus `/history`), and the same machine reported by two users is two separate dashboard entries with separate histories. The response of `history` carries `username` and `hostname` at the top level, not per entry.
 - **Hostnames:** 1-253 chars of `[A-Za-z0-9._-]`, case-insensitive, stored lowercased.
@@ -92,10 +92,10 @@ Rules:
 ## Current state
 
 - **Features:** all of the above is implemented, tested (28 passing) and clippy-clean.
-- **Server copy:** the repo is copied to `y7v.de:~/wuppp`. That server has git but **no Rust toolchain**, so the service isn't built or running there yet.
+- **Server copy:** the repo is copied to `~/wuppp` on the deployment server. That server has git but **no Rust toolchain**, so the service isn't built or running there yet.
 
 ## Roadmap / open items
 
-1. **Deploy to y7v.de:** install rustup there, or cross-copy a release binary. Keep `address = "127.0.0.1"` behind the reverse proxy, put `wuppp.db` somewhere persistent (`database_path`). Optionally add a systemd unit.
+1. **Deploy to the server:** install rustup there, or cross-copy a release binary. Keep `address = "127.0.0.1"` behind the reverse proxy, put `wuppp.db` somewhere persistent (`database_path`). Optionally add a systemd unit.
 2. **Restrict CORS:** the bundled frontend is same-origin and doesn't need it; `*` only matters for other frontends.
 3. **Spec polish:** a hostname `pattern` and `limit` minimum 1 would need post-processing of the generated spec.
