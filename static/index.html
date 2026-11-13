@@ -492,12 +492,12 @@ async function refresh() {
 }
 // ---------------------------------------------------------------------------
 // Chart: free vs total RAM of all hosts over time, per-user lines faded.
-// The x axis is ln(age + 5 s) (api::TIMELINE_AGE_OFFSET_SECS): the last
-// minutes get as much room as the last days.
+// The x axis is ln(age + 300 s) (api::TIMELINE_AGE_OFFSET_SECS): recent
+// minutes get more room than past hours, without squashing the days.
 // ---------------------------------------------------------------------------
 const TIMELINE_API = "." + "__API_BASE__" + "/v1/timeline";
 const TIMELINE_MS = 15000;
-const AGE_OFFSET = 5;
+const AGE_OFFSET = 300;
 const SVG_NS = "http://www.w3.org/2000/svg";
 const chartBox = document.getElementById("chart");
 let timeline = null;
@@ -576,8 +576,8 @@ function drawChart() {
     t.textContent = gib(v);
     axis.append(t);
   }
-  const ticks = [[172800, "2d"], [86400, "1d"], [21600, "6h"], [3600, "1h"], [600, "10m"],
-    [60, "1m"], [10, "10s"], [0, "now"]].filter(([a]) => a <= timeline.span_secs);
+  const ticks = [[172800, "2d"], [86400, "1d"], [43200, "12h"], [21600, "6h"], [10800, "3h"],
+    [3600, "1h"], [1800, "30m"], [600, "10m"], [0, "now"]].filter(([a]) => a <= timeline.span_secs);
   for (const [a, label] of ticks) {
     const x = X(a);
     axis.append(svgEl("line", { class: "grid", x1: x, x2: x, y1: m.t, y2: H - m.b, "stroke-dasharray": "2 4" }));

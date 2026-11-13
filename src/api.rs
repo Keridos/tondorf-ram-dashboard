@@ -41,9 +41,10 @@ pub const TIMELINE_MIN_SPAN_SECS: u64 = 60;
 pub const TIMELINE_MAX_SPAN_SECS: u64 = 30 * 24 * 3600;
 pub const TIMELINE_DEFAULT_POINTS: usize = 120;
 pub const TIMELINE_MAX_POINTS: usize = 1000;
-/// Offset of the log scale: sample ages are spaced evenly in `ln(age + 5 s)`,
-/// which reaches age 0 (now) and is close to `ln(age)` beyond a minute.
-pub const TIMELINE_AGE_OFFSET_SECS: f64 = 5.0;
+/// Offset of the log scale: sample ages are spaced evenly in `ln(age + 300 s)`.
+/// It reaches age 0 (now); the larger it is, the less logarithmic the axis
+/// (with 300 s the last 10 minutes take ~17% of a 2-day chart, not ~46%).
+pub const TIMELINE_AGE_OFFSET_SECS: f64 = 300.0;
 
 // ---------------------------------------------------------------------------
 // Responders
@@ -430,8 +431,8 @@ pub fn dashboard(
 /// Free and total RAM summed over all hosts, and per user, sampled from the
 /// history at `points` times (default 120, 2-1000) spread logarithmically
 /// over the last `span_secs` (default 172800 = 2 days, 60-2592000): the
-/// samples are evenly spaced in `ln(age + 5 s)`, from `span_secs` ago to now,
-/// so recent minutes get as many samples as past days. A host counts at
+/// samples are evenly spaced in `ln(age + 300 s)`, from `span_secs` ago to now,
+/// so recent minutes get more samples than past hours. A host counts at
 /// a sample time if its latest report before it is within its timeout (as on
 /// the dashboard). Values are `null` where no host was live.
 #[openapi(tag = "Dashboard")]

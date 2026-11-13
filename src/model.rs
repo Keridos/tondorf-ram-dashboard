@@ -201,7 +201,7 @@ pub struct Timeline {
     /// How far back the samples go, in seconds.
     pub span_secs: u64,
     /// Sample times, oldest first (exactly `span_secs` ago) to newest (now),
-    /// evenly spaced in `ln(age + 5 s)`: dense near now, sparse in the past. Each series has one value per sample.
+    /// evenly spaced in `ln(age + 300 s)`: dense near now, sparse in the past. Each series has one value per sample.
     pub samples: Vec<DateTime<Utc>>,
     /// Sum over all live hosts.
     pub total: Series,
