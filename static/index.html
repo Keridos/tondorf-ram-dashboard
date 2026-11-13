@@ -22,8 +22,8 @@
   body { font-family: "DejaVu Sans", Verdana, "Segoe UI", system-ui, sans-serif; }
 
   /* Users take one track, Hosts the rest, split into CSS columns of the
-     same width (layoutColumns sets the track count), so every bar uses the
-     same bytes-per-pixel scale. */
+     same width (layoutColumns sets the track count). Each list has its own
+     scale (see render). */
   main {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--col-min)), 1fr));
@@ -291,7 +291,9 @@ function ago(iso) {
   return s < 60 ? `${s}s ago` : `${Math.round(s / 60)}m ago`;
 }
 
-// item: {label, color, free, total, tip: [head, ...lines]}; scale: bytes of a full-width bar.
+// item: {label, color, free, total, each?, tip: [head, ...lines]}; scale: bytes
+// of a full-width bar. each: free/total are per-host averages (pool rows),
+// shown with a "Ø" in front of the numbers.
 function row(item, scale) {
   const li = document.createElement("li");
   li.className = "row";
@@ -314,7 +316,7 @@ function row(item, scale) {
   label.textContent = item.label;
   const size = document.createElement("span");
   size.className = "size";
-  size.textContent = `${short(item.free)}/${short(item.total)}`;
+  size.textContent = `${item.each ? "Ø" : ""}${short(item.free)}/${short(item.total)}`;
   text.append(label, size);
   li.append(text);
 
@@ -420,17 +422,22 @@ function render(dash) {
   // The same name can come from two users; name the user then.
   const seen = new Map();
   for (const e of entries) seen.set(e.name, (seen.get(e.name) ?? 0) + 1);
+  // A pool row's bar and numbers are the average per member host, so it sits
+  // on the same per-host scale as the other rows (its sum would dwarf them);
+  // the tooltip has both. Sorted by what the bar shows.
   const hostItems = entries.map((e) => {
     const base = e.count > 1 ? `${e.short} ×${e.count}` : e.name;
     return {
       label: seen.get(e.name) > 1 ? `${base} · ${e.username}` : base,
       color: e.color,
-      free: e.free,
-      total: e.total,
+      free: e.free / e.count,
+      total: e.total / e.count,
+      each: e.count > 1,
       tip: e.count > 1
         ? [
             `${e.name} (${e.count} hosts)`,
             `${fmt(e.free)} free of ${fmt(e.total)} (${pct(e.free, e.total)})`,
+            `per host: ${fmt(e.free / e.count)} free of ${fmt(e.total / e.count)}`,
             `user ${e.username} · newest report ${ago(e.lastSeen)}`,
             e.members.join(", "),
           ]
@@ -441,14 +448,15 @@ function render(dash) {
               (e.timeout ? ` · timeout ${e.timeout} min` : ""),
           ],
     };
-  });
+  }).sort((a, b) => b.free - a.free || a.label.localeCompare(b.label));
 
-  // One scale for both columns (they are equally wide), so a pixel stands for
-  // the same number of bytes on both sides. The largest user total is the
-  // largest value overall: a host never exceeds its user's sum.
-  const scale = Math.max(1, ...userItems.map((u) => u.total));
-  const fill = (id, items) =>
+  // Each list has its own scale: its largest total is a full-width bar. With
+  // one shared scale (the largest user sum, over 1 TiB) single hosts were
+  // slivers. Within a list a pixel is still the same number of bytes.
+  const fill = (id, items) => {
+    const scale = Math.max(1, ...items.map((i) => i.total));
     document.getElementById(id).replaceChildren(...items.map((i) => row(i, scale)));
+  };
   fill("users", userItems);
   fill("hosts", hostItems);
   hostCount = hostItems.length; // rows shown, after merging pools
@@ -458,7 +466,7 @@ function render(dash) {
 }
 
 // Users get one track of the main grid and Hosts the rest, as CSS columns of
-// the same width, so a pixel is the same number of bytes in every list.
+// the same width, so a pixel is the same number of bytes in every host column.
 // More tracks on wider screens; no more host columns than hosts.
 const mainEl = document.querySelector("main");
 const hostsEl = document.getElementById("hosts");
