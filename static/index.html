@@ -151,6 +151,20 @@
     margin: 0 auto;
     padding: clamp(1rem, 4vh, 2.5rem) clamp(1rem, 6vw, 8rem) 0;
   }
+  /* "300G Total   100G Free": the space left and right of the pair is twice
+     the gap between them (2fr | Total | 1fr | Free | 2fr). Same size as the
+     Users/Hosts headings. */
+  .totals {
+    display: grid;
+    grid-template-columns: 2fr auto 1fr auto 2fr;
+    margin: 0 0 0.6rem;
+    font-size: clamp(1.5rem, 2.8vw, 2.5rem);
+    font-weight: 400;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .totals > span:first-child { grid-column: 2; }
+  .totals > span:last-child { grid-column: 4; }
   .chart-head {
     display: flex;
     flex-wrap: wrap;
@@ -218,6 +232,7 @@
   </div>
 </header>
 <section class="chart" aria-labelledby="chart-h">
+  <p class="totals" aria-live="polite"><span id="total-all">0G Total</span><span id="total-free">0G Free</span></p>
   <div class="chart-head">
     <h2 id="chart-h">Free vs total RAM, last 2 days</h2>
     <ul class="legend">
@@ -379,7 +394,7 @@ function render(dash) {
   hostCount = hosts.length;
   layoutColumns();
   status(hosts.length ? "" : "No hosts are reporting right now.");
-  updateFavicon(hosts);
+  updateTotals(hosts);
 }
 
 // Users get one track of the main grid and Hosts the rest, as CSS columns of
@@ -422,11 +437,15 @@ for (const img of document.querySelectorAll("img[data-name]")) {
   img.src = candidates.shift();
 }
 
-// Favicon: happy Sam when less than half of all RAM is free (lots of malloc),
+// Overall RAM of all live hosts: the "…G Total …G Free" line (whole GiB) and
+// the favicon: happy Sam when less than half of it is free (lots of malloc),
 // sad otherwise, including when no host is reporting.
-function updateFavicon(hosts) {
+function updateTotals(hosts) {
   const free = hosts.reduce((sum, h) => sum + h.free_ram_bytes, 0);
   const total = hosts.reduce((sum, h) => sum + h.total_ram_bytes, 0);
+  document.getElementById("total-all").textContent = `${Math.round(total / GiB)}G Total`;
+  document.getElementById("total-free").textContent = `${Math.round(free / GiB)}G Free`;
+
   const href = total > 0 && free / total < 0.5 ? "img/sam-happy.jpg" : "img/sam-sad.jpg";
   const link = document.getElementById("favicon");
   if (link.getAttribute("href") !== href) link.setAttribute("href", href); // avoid refetching
