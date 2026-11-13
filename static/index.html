@@ -163,20 +163,32 @@
     margin: 0 auto;
     padding: clamp(1rem, 4vh, 2.5rem) clamp(1rem, 6vw, 8rem) 0;
   }
-  /* "300G Total   100G Free": the space left and right of the pair is twice
-     the gap between them (2fr | Total | 1fr | Free | 2fr). Same size as the
+  /* "300G Total   100G Free   1.800 € Money Wasted": the space left and
+     right of the stats is twice the gap between neighbours
+     (2fr | Total | 1fr | Free | 1fr | Money | 2fr). Same size as the
      Users/Hosts headings. */
   .totals {
     display: grid;
-    grid-template-columns: 2fr auto 1fr auto 2fr;
+    grid-template-columns: 2fr auto 1fr auto 1fr auto 2fr;
     margin: 0 0 0.6rem;
     font-size: clamp(1.5rem, 2.8vw, 2.5rem);
     font-weight: 400;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
-  .totals > span:first-child { grid-column: 2; }
-  .totals > span:last-child { grid-column: 4; }
+  .totals > span:nth-child(1) { grid-column: 2; }
+  .totals > span:nth-child(2) { grid-column: 4; }
+  .totals > span:nth-child(3) { grid-column: 6; }
+  /* Narrow screens: the three stats don't fit on one line; wrap them, centered. */
+  @media (max-width: 44rem) {
+    .totals {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 0.2rem 1.25rem;
+      font-size: 1.3rem;
+    }
+  }
   .chart-head {
     display: flex;
     flex-wrap: wrap;
@@ -244,7 +256,7 @@
   </div>
 </header>
 <section class="chart" aria-labelledby="chart-h">
-  <p class="totals" aria-live="polite"><span id="total-all">0G Total</span><span id="total-free">0G Free</span></p>
+  <p class="totals" aria-live="polite"><span id="total-all">0G Total</span><span id="total-free">0G Free</span><span id="money-wasted">0 € Money Wasted</span></p>
   <div class="chart-head">
     <h2 id="chart-h">Free vs total RAM, last 2 days</h2>
     <ul class="legend">
@@ -506,7 +518,15 @@ for (const img of document.querySelectorAll("img[data-name]")) {
   img.src = candidates.shift();
 }
 
-// Overall RAM of all live hosts: the "…G Total …G Free" line (whole GiB) and
+// Hard-coded DDR5 street price, € per GiB of RAM (retail "32 GB" kits hold
+// 32 GiB). Researched 2026-11-13: German retail ~600-650 € per 32 GB
+// DDR5-6000 kit (~18.8-20 €/GB, netz-trends.de, elitegear.io); US trackers
+// average $15-20/GB (ramradar.app, memorypricechart.com, capitalandcompute.net).
+const EUR_PER_GIB = 18;
+const euros = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
+
+// Overall RAM of all live hosts: the "…G Total …G Free" line (whole GiB), what
+// the free RAM would cost ("Money Wasted") and
 // the favicon: happy Sam when less than half of it is free (lots of malloc),
 // sad otherwise, including when no host is reporting.
 function updateTotals(hosts) {
@@ -514,6 +534,8 @@ function updateTotals(hosts) {
   const total = hosts.reduce((sum, h) => sum + h.total_ram_bytes, 0);
   document.getElementById("total-all").textContent = `${Math.round(total / GiB)}G Total`;
   document.getElementById("total-free").textContent = `${Math.round(free / GiB)}G Free`;
+  document.getElementById("money-wasted").textContent =
+    `${euros.format((free / GiB) * EUR_PER_GIB)} € Money Wasted`;
 
   const href = total > 0 && free / total < 0.5 ? "img/sam-happy.jpg" : "img/sam-sad.jpg";
   const link = document.getElementById("favicon");
