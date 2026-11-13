@@ -11,17 +11,23 @@
     --used: #646464;      /* used RAM segment */
     --ink: #ffffff;
     --muted: #c8c8c8;
-    --row-h: clamp(2.75rem, 7.5vh, 4.75rem);
+    --row-h: clamp(1.6rem, 3vh, 2.1rem);
+    --page-w: 128rem;
+    --col-min: 19rem;     /* narrowest list column (see layoutColumns) */
+    --col-gap: clamp(1.25rem, 2.5vw, 3rem);
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ink); }
   body { font-family: "DejaVu Sans", Verdana, "Segoe UI", system-ui, sans-serif; }
 
+  /* Users take one track, Hosts the rest, split into CSS columns of the
+     same width (layoutColumns sets the track count), so every bar uses the
+     same bytes-per-pixel scale. */
   main {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
-    gap: 3rem clamp(2rem, 6vw, 7rem);
-    max-width: 96rem;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--col-min)), 1fr));
+    gap: 2rem var(--col-gap);
+    max-width: var(--page-w);
     margin: 0 auto;
     padding: clamp(1rem, 4vh, 3rem) clamp(1rem, 6vw, 8rem) clamp(1.5rem, 8vh, 7rem);
   }
@@ -31,7 +37,7 @@
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
     gap: 1rem clamp(1rem, 3vw, 3rem);
-    max-width: 96rem;
+    max-width: var(--page-w);
     margin: 0 auto;
     padding: clamp(1.5rem, 6vh, 5rem) clamp(1rem, 6vw, 8rem) 0;
   }
@@ -67,12 +73,15 @@
     h1 { grid-column: 1 / -1; grid-row: 1; }
   }
   h2 {
-    margin: 0 0 0.6rem;
+    margin: 0 0 0.4rem;
     text-align: center;
     font-weight: 400;
-    font-size: clamp(2rem, 4.5vw, 4rem);
+    font-size: clamp(1.5rem, 2.8vw, 2.5rem);
   }
-  ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+  ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.3rem; }
+  /* Hosts flow top to bottom, then into the next column. */
+  #hosts { display: block; column-gap: var(--col-gap); }
+  #hosts .row { break-inside: avoid; margin-bottom: 0.3rem; }
 
   .row {
     position: relative;
@@ -80,7 +89,7 @@
     gap: 2px;                       /* surface gap between free and used */
     height: var(--row-h);
     padding: 2px;
-    border: 3px solid var(--frame);
+    border: 2px solid var(--frame);
     border-radius: 3px;
     outline-offset: 2px;
   }
@@ -137,7 +146,7 @@
 
   /* RAM over time, above the columns. */
   .chart {
-    max-width: 96rem;
+    max-width: var(--page-w);
     margin: 0 auto;
     padding: clamp(1rem, 4vh, 2.5rem) clamp(1rem, 6vw, 8rem) 0;
   }
@@ -367,8 +376,31 @@ function render(dash) {
     document.getElementById(id).replaceChildren(...items.map((i) => row(i, scale)));
   fill("users", userItems);
   fill("hosts", hostItems);
+  hostCount = hosts.length;
+  layoutColumns();
   status(hosts.length ? "" : "No hosts are reporting right now.");
 }
+
+// Users get one track of the main grid and Hosts the rest, as CSS columns of
+// the same width, so a pixel is the same number of bytes in every list.
+// More tracks on wider screens; no more host columns than hosts.
+const mainEl = document.querySelector("main");
+const hostsEl = document.getElementById("hosts");
+let hostCount = 0;
+function layoutColumns() {
+  const cs = getComputedStyle(mainEl);
+  const rootPx = parseFloat(getComputedStyle(document.documentElement).fontSize);
+  const min = parseFloat(cs.getPropertyValue("--col-min")) * rootPx;
+  const gap = parseFloat(cs.columnGap) || 0;
+  const width = mainEl.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  let tracks = Math.max(1, Math.floor((width + gap) / (min + gap)));
+  const hostCols = tracks > 1 ? Math.max(1, Math.min(tracks - 1, hostCount)) : 1;
+  if (tracks > 1) tracks = hostCols + 1;
+  mainEl.style.gridTemplateColumns = `repeat(${tracks}, minmax(0, 1fr))`;
+  hostsEl.parentElement.style.gridColumn = tracks > 1 ? `2 / span ${hostCols}` : "";
+  hostsEl.style.columnCount = hostCols;
+}
+addEventListener("resize", layoutColumns);
 
 // Pictures are JPEGs in static/img/ (served at img/): <name>.jpg, else
 // <name>.jpeg, else an emoji placeholder.
