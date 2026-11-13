@@ -153,6 +153,7 @@
     text-shadow: var(--outline);
     font-variant-numeric: tabular-nums;
   }
+  .size .price { margin-left: 0.6em; }
 
   .status { grid-column: 1 / -1; text-align: center; color: var(--muted); margin: 0; }
   .status:empty { display: none; }
@@ -309,7 +310,10 @@ function row(item, scale) {
   li.className = "row";
   li.tabIndex = 0;
   li.style.setProperty("--c", item.color);
-  li.setAttribute("aria-label", `${item.label}: ${fmt(item.free)} free of ${fmt(item.total)}`);
+  li.setAttribute(
+    "aria-label",
+    `${item.label}: ${fmt(item.free)} free of ${fmt(item.total)}, ${wasted(item.free)} wasted`,
+  );
 
   const used = item.total - item.free;
   for (const [cls, bytes] of [["free", item.free], ["used", used]]) {
@@ -327,6 +331,10 @@ function row(item, scale) {
   const size = document.createElement("span");
   size.className = "size";
   size.textContent = `${item.each ? "Ø" : ""}${short(item.free)}/${short(item.total)}`;
+  const price = document.createElement("span");
+  price.className = "price";
+  price.textContent = wasted(item.free); // what the free RAM shown here costs
+  size.append(price);
   text.append(label, size);
   li.append(text);
 
@@ -423,7 +431,7 @@ function render(dash) {
       ...u,
       tip: [
         u.label,
-        `${fmt(u.free)} free of ${fmt(u.total)} (${pct(u.free, u.total)})`,
+        `${fmt(u.free)} free of ${fmt(u.total)} (${pct(u.free, u.total)}) · ${wasted(u.free)} wasted`,
         `${u.hosts.length} host${u.hosts.length === 1 ? "" : "s"}: ${u.hosts.join(", ")}`,
       ],
     }));
@@ -446,14 +454,14 @@ function render(dash) {
       tip: e.count > 1
         ? [
             `${e.name} (${e.count} hosts)`,
-            `${fmt(e.free)} free of ${fmt(e.total)} (${pct(e.free, e.total)})`,
-            `per host: ${fmt(e.free / e.count)} free of ${fmt(e.total / e.count)}`,
+            `${fmt(e.free)} free of ${fmt(e.total)} (${pct(e.free, e.total)}) · ${wasted(e.free)} wasted`,
+            `per host: ${fmt(e.free / e.count)} free of ${fmt(e.total / e.count)} · ${wasted(e.free / e.count)}`,
             `user ${e.username} · newest report ${ago(e.lastSeen)}`,
             e.members.join(", "),
           ]
         : [
             e.name,
-            `${fmt(e.free)} free of ${fmt(e.total)} (${pct(e.free, e.total)})`,
+            `${fmt(e.free)} free of ${fmt(e.total)} (${pct(e.free, e.total)}) · ${wasted(e.free)} wasted`,
             `user ${e.username} · last report ${ago(e.lastSeen)}` +
               (e.timeout ? ` · timeout ${e.timeout} min` : ""),
           ],
@@ -522,6 +530,8 @@ for (const img of document.querySelectorAll("img[data-name]")) {
 // average $15-20/GB (ramradar.app, memorypricechart.com, capitalandcompute.net).
 const EUR_PER_GIB = 18;
 const euros = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
+// What `bytes` of RAM cost, e.g. "1.098€".
+const wasted = (bytes) => `${euros.format((bytes / GiB) * EUR_PER_GIB)}€`;
 
 // Overall RAM of all live hosts: the "…G Total …G Free" line (whole GiB), what
 // the free RAM would cost ("…€ Wasted") and
@@ -533,7 +543,7 @@ function updateTotals(hosts) {
   document.getElementById("total-all").textContent = `${Math.round(total / GiB)}G Total`;
   document.getElementById("total-free").textContent = `${Math.round(free / GiB)}G Free`;
   document.getElementById("money-wasted").textContent =
-    `${euros.format((free / GiB) * EUR_PER_GIB)}€ Wasted`;
+    `${wasted(free)} Wasted`;
 
   const href = total > 0 && free / total < 0.5 ? "img/sam-happy.jpg" : "img/sam-sad.jpg";
   const link = document.getElementById("favicon");
