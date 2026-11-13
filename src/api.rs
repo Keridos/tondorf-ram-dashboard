@@ -24,7 +24,7 @@ use chrono::DateTime;
 use crate::auth::WriteAuth;
 use crate::history::{History, random_color};
 use crate::model::{
-    Dashboard, ErrorBody, Host, HostHistory, HostReport, Series, Timeline, UserSeries,
+    Dashboard, ErrorBody, Host, HostHistory, HostReport, MemoryType, Series, Timeline, UserSeries,
     normalize_color, normalize_hostname, normalize_username,
 };
 use crate::store::Store;
@@ -309,6 +309,9 @@ pub fn report_host(
         store.recolor(&username, &color);
     }
 
+    let memory_type = report
+        .memory_type
+        .unwrap_or_else(|| MemoryType::default_for(&hostname));
     let host = Host {
         hostname,
         username,
@@ -316,6 +319,7 @@ pub fn report_host(
         total_ram_bytes: report.total_ram_bytes,
         color,
         timeout_minutes: report.timeout_minutes,
+        memory_type,
         // Microsecond precision, matching what the history stores.
         last_seen: Utc::now().trunc_subsecs(6),
     };

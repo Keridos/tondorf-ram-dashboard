@@ -150,6 +150,7 @@ mod tests {
             total_ram_bytes: 100,
             color: "#000000".into(),
             timeout_minutes: None,
+            memory_type: crate::model::MemoryType::System,
             last_seen,
         }
     }

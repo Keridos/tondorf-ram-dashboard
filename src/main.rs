@@ -726,6 +726,7 @@ mod tests {
             total_ram_bytes: 10,
             color: String::new(),
             timeout_minutes: timeout,
+            memory_type: crate::model::MemoryType::System,
             last_seen: now - TimeDelta::minutes(mins),
         };
         let history = History::open(&db).unwrap();
@@ -956,6 +957,45 @@ mod tests {
             r#"{"free_ram_bytes":1,"total_ram_bytes":2,"color":null}"#,
         );
         assert_eq!(res.status(), Status::Created, "null means no color");
+    }
+
+    #[test]
+    fn report_accepts_an_optional_memory_type() {
+        let c = client();
+        let put = |host: &str, extra: &str| {
+            c.put(format!("/api/v1/report/a/{host}"))
+                .header(ContentType::JSON)
+                .header(auth(TOKEN))
+                .body(format!(
+                    r#"{{"free_ram_bytes":1,"total_ram_bytes":2{extra}}}"#
+                ))
+                .dispatch()
+        };
+        let type_of = |host: &str, extra: &str| -> String {
+            let v: Value = put(host, extra).into_json().unwrap();
+            v["memory_type"].as_str().unwrap().to_owned()
+        };
+        // Defaults: by hostname suffix, case-insensitive.
+        assert_eq!(type_of("box", ""), "system");
+        assert_eq!(type_of("box-VRAM", ""), "vram");
+        assert_eq!(type_of("boxvram", r#","memory_type":null"#), "vram");
+        // Explicit types win, including over the hostname rule.
+        for t in [
+            "system", "vram", "ddr3", "ddr4", "ddr5", "gddr5", "gddr5x", "gddr6", "gddr6x", "gddr7",
+        ] {
+            assert_eq!(type_of("box-vram", &format!(r#","memory_type":"{t}""#)), t);
+        }
+        // The live entry carries it too.
+        let v: Value = c
+            .get("/api/v1/report/a/box-vram")
+            .dispatch()
+            .into_json()
+            .unwrap();
+        assert_eq!(v["memory_type"], "gddr7");
+        for bad in [r#""DDR5""#, r#""ddr6""#, r#""hbm3""#, "5"] {
+            let res = put("box", &format!(r#","memory_type":{bad}"#));
+            assert_eq!(res.status(), Status::UnprocessableEntity, "{bad}");
+        }
     }
 
     #[test]

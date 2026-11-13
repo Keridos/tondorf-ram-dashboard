@@ -11,6 +11,68 @@ pub const MAX_TIMEOUT_MINUTES: u32 = 60;
 /// and bogus reports (there was a 100 PB one) would wreck the chart scale.
 pub const MAX_TOTAL_RAM_BYTES: u64 = 400 << 30;
 
+/// Kind of memory a host reports. `system` and `vram` are the generic
+/// defaults; the rest name a specific DDR or GDDR generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryType {
+    System,
+    Vram,
+    Ddr3,
+    Ddr4,
+    Ddr5,
+    Gddr5,
+    Gddr5x,
+    Gddr6,
+    Gddr6x,
+    Gddr7,
+}
+
+impl MemoryType {
+    const ALL: [MemoryType; 10] = [
+        Self::System,
+        Self::Vram,
+        Self::Ddr3,
+        Self::Ddr4,
+        Self::Ddr5,
+        Self::Gddr5,
+        Self::Gddr5x,
+        Self::Gddr6,
+        Self::Gddr6x,
+        Self::Gddr7,
+    ];
+
+    /// The wire/database name, e.g. `"gddr6x"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Vram => "vram",
+            Self::Ddr3 => "ddr3",
+            Self::Ddr4 => "ddr4",
+            Self::Ddr5 => "ddr5",
+            Self::Gddr5 => "gddr5",
+            Self::Gddr5x => "gddr5x",
+            Self::Gddr6 => "gddr6",
+            Self::Gddr6x => "gddr6x",
+            Self::Gddr7 => "gddr7",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.as_str() == s)
+    }
+
+    /// Used when a report doesn't say: `vram` if the hostname ends in "vram"
+    /// (case-insensitive), else `system`.
+    pub fn default_for(hostname: &str) -> Self {
+        if hostname.to_ascii_lowercase().ends_with("vram") {
+            Self::Vram
+        } else {
+            Self::System
+        }
+    }
+}
+
 /// Memory report sent by a host.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -35,6 +97,12 @@ pub struct HostReport {
     #[serde(default)]
     #[schemars(range(min = 1, max = 60))]
     pub timeout_minutes: Option<u32>,
+    /// Optional kind of memory: `system`, `vram`, `ddr3`-`ddr5` or
+    /// `gddr5`/`gddr5x`/`gddr6`/`gddr6x`/`gddr7`. Defaults to `vram` if the
+    /// hostname ends in "vram" (case-insensitive), else `system`. The
+    /// dashboard prices free RAM by it.
+    #[serde(default)]
+    pub memory_type: Option<MemoryType>,
 }
 
 fn example_report() -> Value {
@@ -43,6 +111,7 @@ fn example_report() -> Value {
         "total_ram_bytes": 17_179_869_184u64,
         "color": "#3d8bff",
         "timeout_minutes": 30,
+        "memory_type": "ddr5",
     })
 }
 
@@ -122,6 +191,8 @@ pub struct Host {
     /// Per-host timeout from the latest report, in minutes; `null` means the
     /// server default (`stale_after_secs`).
     pub timeout_minutes: Option<u32>,
+    /// Kind of memory: from the report, or the default for the hostname.
+    pub memory_type: MemoryType,
     /// Server time of the latest report.
     pub last_seen: DateTime<Utc>,
 }

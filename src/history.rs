@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::model::{HistoryEntry, Host, MAX_TIMEOUT_MINUTES};
+use crate::model::{HistoryEntry, Host, MAX_TIMEOUT_MINUTES, MemoryType};
 
 pub struct History {
     conn: Mutex<Connection>,
@@ -121,7 +121,8 @@ impl History {
                  free_ram_bytes  INTEGER NOT NULL,
                  total_ram_bytes INTEGER NOT NULL,
                  reported_at     TEXT    NOT NULL,
-                 timeout_minutes INTEGER
+                 timeout_minutes INTEGER,
+                 memory_type     TEXT
              );
              DROP INDEX IF EXISTS reports_host_time;
              CREATE INDEX IF NOT EXISTS reports_user_host_time
@@ -139,6 +140,20 @@ impl History {
         if !has_timeout {
             conn.execute("ALTER TABLE reports ADD COLUMN timeout_minutes INTEGER", [])?;
         }
+        // ... and before memory types: add the column and backfill the default
+        // (`vram` for hostnames ending in "vram", else `system`).
+        let has_memory_type = conn
+            .prepare("SELECT 1 FROM pragma_table_info('reports') WHERE name = 'memory_type'")?
+            .exists([])?;
+        if !has_memory_type {
+            conn.execute("ALTER TABLE reports ADD COLUMN memory_type TEXT", [])?;
+        }
+        conn.execute(
+            "UPDATE reports
+             SET memory_type = CASE WHEN lower(hostname) LIKE '%vram' THEN 'vram' ELSE 'system' END
+             WHERE memory_type IS NULL",
+            [],
+        )?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -181,8 +196,9 @@ impl History {
     pub fn record(&self, host: &Host) -> rusqlite::Result<()> {
         self.conn.lock().unwrap().execute(
             "INSERT INTO reports
-                 (hostname, username, free_ram_bytes, total_ram_bytes, reported_at, timeout_minutes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 (hostname, username, free_ram_bytes, total_ram_bytes, reported_at,
+                  timeout_minutes, memory_type)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 host.hostname,
                 host.username,
@@ -190,6 +206,7 @@ impl History {
                 host.total_ram_bytes,
                 ts(host.last_seen),
                 host.timeout_minutes,
+                host.memory_type.as_str(),
             ],
         )?;
         Ok(())
@@ -291,21 +308,28 @@ impl History {
         // SQLite takes the bare columns from the row that has the MAX().
         let mut stmt = conn.prepare(
             "SELECT r.username, r.hostname, r.free_ram_bytes, r.total_ram_bytes,
-                    MAX(r.reported_at), r.timeout_minutes, COALESCE(u.color, '')
+                    MAX(r.reported_at), r.timeout_minutes, COALESCE(u.color, ''),
+                    r.memory_type
              FROM reports r LEFT JOIN users u ON u.username = r.username
              WHERE r.reported_at >= ?1
              GROUP BY r.username, r.hostname",
         )?;
         stmt.query_map([ts(since)], |row| {
             let reported_at: String = row.get(4)?;
+            let hostname: String = row.get(1)?;
+            let memory_type = row
+                .get::<_, Option<String>>(7)?
+                .and_then(|t| MemoryType::parse(&t))
+                .unwrap_or_else(|| MemoryType::default_for(&hostname));
             Ok(Host {
                 username: row.get(0)?,
-                hostname: row.get(1)?,
+                hostname,
                 free_ram_bytes: row.get(2)?,
                 total_ram_bytes: row.get(3)?,
                 last_seen: parse_ts(&reported_at, 4)?,
                 timeout_minutes: row.get(5)?,
                 color: row.get(6)?,
+                memory_type,
             })
         })?
         .collect()
@@ -352,8 +376,73 @@ mod tests {
             total_ram_bytes: 100,
             color: "#000000".into(),
             timeout_minutes: None,
+            memory_type: MemoryType::System,
             last_seen: at,
         }
+    }
+
+    #[test]
+    fn memory_type_is_stored_restored_and_backfilled() {
+        let dir = std::env::temp_dir().join(format!("wuppp-memtype-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.db");
+        let path = path.to_str().unwrap();
+        let t0 = Utc::now().trunc_subsecs(6);
+
+        // A database from before memory types: no column, two old rows.
+        {
+            let conn = Connection::open(path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE reports (id INTEGER PRIMARY KEY, hostname TEXT NOT NULL,
+                     username TEXT NOT NULL, free_ram_bytes INTEGER NOT NULL,
+                     total_ram_bytes INTEGER NOT NULL, reported_at TEXT NOT NULL,
+                     timeout_minutes INTEGER);",
+            )
+            .unwrap();
+            for name in ["box", "box-VRAM"] {
+                conn.execute(
+                    "INSERT INTO reports (hostname, username, free_ram_bytes, total_ram_bytes, reported_at)
+                     VALUES (?1, 'u', 1, 2, ?2)",
+                    params![name, ts(t0)],
+                )
+                .unwrap();
+            }
+        }
+
+        let h = History::open(path).unwrap();
+        let typed = Host {
+            memory_type: MemoryType::Gddr6x,
+            ..host("gpu", 1, t0)
+        };
+        h.record(&typed).unwrap();
+        let types: Vec<(String, String)> = h
+            .conn
+            .lock()
+            .unwrap()
+            .prepare("SELECT hostname, memory_type FROM reports ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let types: Vec<(&str, &str)> = types
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        assert_eq!(
+            types,
+            [("box", "system"), ("box-VRAM", "vram"), ("gpu", "gddr6x")]
+        );
+
+        let mut latest = h.latest_reports(t0).unwrap();
+        latest.sort_by(|a, b| a.hostname.cmp(&b.hostname));
+        let got: Vec<_> = latest.iter().map(|x| x.memory_type).collect();
+        assert_eq!(
+            got,
+            [MemoryType::System, MemoryType::Vram, MemoryType::Gddr6x]
+        );
+        drop(h);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

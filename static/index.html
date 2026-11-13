@@ -312,7 +312,7 @@ function row(item, scale) {
   li.style.setProperty("--c", item.color);
   li.setAttribute(
     "aria-label",
-    `${item.label}: ${fmt(item.free)} free of ${fmt(item.total)}, ${wasted(item.free)} wasted`,
+    `${item.label}: ${fmt(item.free)} free of ${fmt(item.total)}, ${eur(item.cost)} wasted`,
   );
 
   const used = item.total - item.free;
@@ -333,7 +333,7 @@ function row(item, scale) {
   size.textContent = `${item.each ? "Ø" : ""}${short(item.free)}/${short(item.total)}`;
   const price = document.createElement("span");
   price.className = "price";
-  price.textContent = wasted(item.free); // what the free RAM shown here costs
+  price.textContent = eur(item.cost); // what the free RAM shown here costs
   size.append(price);
   text.append(label, size);
   li.append(text);
@@ -385,7 +385,8 @@ const POOL = /^(pool-u-\d{3})-(.+?)(-vram)?$/;
 function mergePools(hosts) {
   const single = (h) => ({
     name: h.hostname, username: h.username, color: h.color,
-    free: h.free_ram_bytes, total: h.total_ram_bytes,
+    free: h.free_ram_bytes, total: h.total_ram_bytes, cost: freeCost(h),
+    types: new Set([h.memory_type]),
     lastSeen: h.last_seen, timeout: h.timeout_minutes, count: 1, members: [h.hostname],
   });
   const out = [];
@@ -397,8 +398,11 @@ function mergePools(hosts) {
     // Short label so it fits narrow columns: "u-012 ×15", "u-012 vram ×15".
     const short = `${m[1].slice("pool-".length)}${m[3] ? " vram" : ""}`;
     const key = `${h.username}\n${name}`;
-    const g = pools.get(key) ?? { ...single(h), name, short, free: 0, total: 0, count: 0, members: [], hosts: [] };
+    const g = pools.get(key) ??
+      { ...single(h), name, short, free: 0, total: 0, cost: 0, types: new Set(), count: 0, members: [], hosts: [] };
     g.free += h.free_ram_bytes;
+    g.cost += freeCost(h);
+    g.types.add(h.memory_type);
     g.total += h.total_ram_bytes;
     g.count += 1;
     g.members.push(m[2]);
@@ -419,8 +423,9 @@ function render(dash) {
 
   const users = new Map();
   for (const h of hosts) {
-    const u = users.get(h.username) ?? { label: h.username, color: h.color, free: 0, total: 0, hosts: [] };
+    const u = users.get(h.username) ?? { label: h.username, color: h.color, free: 0, total: 0, cost: 0, hosts: [] };
     u.free += h.free_ram_bytes;
+    u.cost += freeCost(h);
     u.total += h.total_ram_bytes;
     u.hosts.push(h.hostname);
     users.set(h.username, u);
@@ -431,7 +436,7 @@ function render(dash) {
       ...u,
       tip: [
         u.label,
-        `${fmt(u.free)} free of ${fmt(u.total)} (${pct(u.free, u.total)}) · ${wasted(u.free)} wasted`,
+        `${fmt(u.free)} free of ${fmt(u.total)} (${pct(u.free, u.total)}) · ${eur(u.cost)} wasted`,
         `${u.hosts.length} host${u.hosts.length === 1 ? "" : "s"}: ${u.hosts.join(", ")}`,
       ],
     }));
@@ -450,19 +455,20 @@ function render(dash) {
       color: e.color,
       free: e.free / e.count,
       total: e.total / e.count,
+      cost: e.cost / e.count,
       each: e.count > 1,
       tip: e.count > 1
         ? [
             `${e.name} (${e.count} hosts)`,
-            `${fmt(e.free)} free of ${fmt(e.total)} (${pct(e.free, e.total)}) · ${wasted(e.free)} wasted`,
-            `per host: ${fmt(e.free / e.count)} free of ${fmt(e.total / e.count)} · ${wasted(e.free / e.count)}`,
-            `user ${e.username} · newest report ${ago(e.lastSeen)}`,
+            `${fmt(e.free)} free of ${fmt(e.total)} (${pct(e.free, e.total)}) · ${eur(e.cost)} wasted`,
+            `per host: ${fmt(e.free / e.count)} free of ${fmt(e.total / e.count)} · ${eur(e.cost / e.count)}`,
+            `user ${e.username} · ${[...e.types].join("/")} · newest report ${ago(e.lastSeen)}`,
             e.members.join(", "),
           ]
         : [
             e.name,
-            `${fmt(e.free)} free of ${fmt(e.total)} (${pct(e.free, e.total)}) · ${wasted(e.free)} wasted`,
-            `user ${e.username} · last report ${ago(e.lastSeen)}` +
+            `${fmt(e.free)} free of ${fmt(e.total)} (${pct(e.free, e.total)}) · ${eur(e.cost)} wasted`,
+            `user ${e.username} · ${[...e.types].join("/")} · last report ${ago(e.lastSeen)}` +
               (e.timeout ? ` · timeout ${e.timeout} min` : ""),
           ],
     };
@@ -524,16 +530,38 @@ for (const img of document.querySelectorAll("img[data-name]")) {
   img.src = candidates.shift();
 }
 
-// Hard-coded DDR5 street price, € per GiB of RAM (retail "32 GB" kits hold
-// 32 GiB). Researched 2026-11-13: German retail ~600-650 € per 32 GB
-// DDR5-6000 kit (~18.8-20 €/GB, netz-trends.de, elitegear.io); US trackers
-// average $15-20/GB (ramradar.app, memorypricechart.com, capitalandcompute.net).
-const EUR_PER_GIB = 18;
+// Hard-coded memory prices, € per GiB, by the hosts' memory_type (retail
+// "32 GB" kits hold 32 GiB). Researched 2026-11-13, $ converted at ~1.12 $/€:
+// - ddr5: German retail ~600-650 € per 32 GB DDR5-6000 kit (~18.8-20 €/GB,
+//   netz-trends.de, elitegear.io); US trackers $15-20/GB (ramradar.app,
+//   memorypricechart.com, capitalandcompute.net)
+// - ddr4: retail kits avg $8.58, median $7.81/GB (ramradar.app)
+// - ddr3: used/new listings ~$1.5-3.8/GB (rampricesusa.com, getpcparts.com)
+// - gddr*: not sold retail, so chip spot prices: GDDR5 8Gb ~$12.3, GDDR6 8Gb
+//   ~$12.5 (DRAMeXchange, TrendForce), GDDR6 index $19.7 (Silicon Data);
+//   GDDR7 3 GB modules reportedly $60-70 (~$20-23/GB, TechPowerUp). No GDDR5X
+//   or GDDR6X quotes: priced a little above GDDR5 / GDDR6.
+// - system / vram (type not reported): weighted by the user's assumed mix
+//   10 : 75 : 25 of the old / mainstream / new generation (sums to 110, so
+//   ~9 / 68 / 23 %): DDR3/4/5 and GDDR5/6/7.
+const EUR_PER_GIB_BY_TYPE = {
+  ddr3: 3, ddr4: 8, ddr5: 18,
+  gddr5: 11, gddr5x: 11.5, gddr6: 12.5, gddr6x: 14, gddr7: 19,
+};
+{
+  const p = EUR_PER_GIB_BY_TYPE;
+  const mix = (old, main, cur) => (10 * old + 75 * main + 25 * cur) / 110;
+  p.system = mix(p.ddr3, p.ddr4, p.ddr5); // ~9.8
+  p.vram = mix(p.gddr5, p.gddr6, p.gddr7); // ~13.8
+}
+// What a host's free RAM costs, in €.
+const freeCost = (h) =>
+  (h.free_ram_bytes / GiB) * (EUR_PER_GIB_BY_TYPE[h.memory_type] ?? EUR_PER_GIB_BY_TYPE.system);
 // Whole euros, thousands separated by a narrow no-break space (U+202F), since
 // "." is the decimal point here: "1 098€", "37 026€".
 const euros = (n) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, "\u202f");
-// What `bytes` of RAM cost, e.g. "1 098€".
-const wasted = (bytes) => `${euros((bytes / GiB) * EUR_PER_GIB)}€`;
+// An amount in €, e.g. "1 098€".
+const eur = (amount) => `${euros(amount)}€`;
 
 // Overall RAM of all live hosts: the "…G Total …G Free" line (whole GiB), what
 // the free RAM would cost ("…€ Wasted") and
@@ -545,7 +573,7 @@ function updateTotals(hosts) {
   document.getElementById("total-all").textContent = `${Math.round(total / GiB)}G Total`;
   document.getElementById("total-free").textContent = `${Math.round(free / GiB)}G Free`;
   document.getElementById("money-wasted").textContent =
-    `${wasted(free)} Wasted`;
+    `${eur(hosts.reduce((sum, h) => sum + freeCost(h), 0))} Wasted`;
 
   const href = total > 0 && free / total < 0.5 ? "img/sam-happy.jpg" : "img/sam-sad.jpg";
   const link = document.getElementById("favicon");
