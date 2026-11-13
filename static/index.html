@@ -129,7 +129,7 @@ const RELOAD_GUARD_MS = 60000; // at most one auto-reload per minute
 const REFRESH_MS = 5000;
 
 const GiB = 1024 ** 3;
-// Bar text: free RAM, one decimal, e.g. "8.4G" (GiB).
+// Bar text: one decimal in GiB, e.g. "8.4G"; rows show "free/total".
 const short = (bytes) => (bytes / GiB).toFixed(1) + "G";
 const fmt = (bytes) => (bytes / GiB).toFixed(bytes < 10 * GiB ? 1 : 0) + " GiB";
 const pct = (free, total) => Math.round((free / total) * 100) + "%";
@@ -162,7 +162,7 @@ function row(item, scale) {
   label.textContent = item.label;
   const size = document.createElement("span");
   size.className = "size";
-  size.textContent = short(item.free);
+  size.textContent = `${short(item.free)}/${short(item.total)}`;
   text.append(label, size);
   li.append(text);
 
