@@ -64,8 +64,9 @@
        it may overflow onto. Eight offset shadows plus a soft one form a smooth
        ~0.065em ring (text-stroke would draw spikes at sharp corners). */
     --o: 0.065em;
-    color: #fff;
-    text-shadow:
+    /* Substituted where it is used, so each element's own em applies: the
+       smaller RAM numbers get a proportionally thinner outline. */
+    --outline:
       calc(-1 * var(--o)) calc(-1 * var(--o)) 0 #000,
       0 calc(-1 * var(--o)) 0 #000,
       var(--o) calc(-1 * var(--o)) 0 #000,
@@ -75,15 +76,18 @@
       calc(-1 * var(--o)) var(--o) 0 #000,
       calc(-1 * var(--o)) 0 0 #000,
       0 0 calc(var(--o) * 1.5) #000;
+    color: #fff;
+    text-shadow: var(--outline);
   }
   .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   /* Free/total: smaller and slightly dimmed, but still brighter than every
-     other grey on the page (brightest: --muted #c8c8c8). The outline is
-     inherited from .text, so it keeps the labels' thickness. */
+     other grey on the page (brightest: --muted #c8c8c8). Re-applying the
+     outline here scales it to this smaller font. */
   .size {
     flex: none;
     font-size: 0.72em;
     color: #dedede;
+    text-shadow: var(--outline);
     font-variant-numeric: tabular-nums;
   }
 
