@@ -21,6 +21,7 @@ pub enum MemoryType {
     Ddr3,
     Ddr4,
     Ddr5,
+    Lpddr5,
     Gddr5,
     Gddr5x,
     Gddr6,
@@ -29,12 +30,13 @@ pub enum MemoryType {
 }
 
 impl MemoryType {
-    const ALL: [MemoryType; 10] = [
+    const ALL: [MemoryType; 11] = [
         Self::System,
         Self::Vram,
         Self::Ddr3,
         Self::Ddr4,
         Self::Ddr5,
+        Self::Lpddr5,
         Self::Gddr5,
         Self::Gddr5x,
         Self::Gddr6,
@@ -50,6 +52,7 @@ impl MemoryType {
             Self::Ddr3 => "ddr3",
             Self::Ddr4 => "ddr4",
             Self::Ddr5 => "ddr5",
+            Self::Lpddr5 => "lpddr5",
             Self::Gddr5 => "gddr5",
             Self::Gddr5x => "gddr5x",
             Self::Gddr6 => "gddr6",
@@ -97,7 +100,7 @@ pub struct HostReport {
     #[serde(default)]
     #[schemars(range(min = 1, max = 60))]
     pub timeout_minutes: Option<u32>,
-    /// Optional kind of memory: `system`, `vram`, `ddr3`-`ddr5` or
+    /// Optional kind of memory: `system`, `vram`, `ddr3`-`ddr5`, `lpddr5` or
     /// `gddr5`/`gddr5x`/`gddr6`/`gddr6x`/`gddr7`. Defaults to `vram` if the
     /// hostname ends in "vram" (case-insensitive), else `system`. The
     /// dashboard prices free RAM by it.

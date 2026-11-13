@@ -537,6 +537,9 @@ for (const img of document.querySelectorAll("img[data-name]")) {
 //   memorypricechart.com, capitalandcompute.net)
 // - ddr4: retail kits avg $8.58, median $7.81/GB (ramradar.app)
 // - ddr3: used/new listings ~$1.5-3.8/GB (rampricesusa.com, getpcparts.com)
+// - lpddr5: not sold retail either, so module prices: LPDDR5X 12 GB module
+//   $145.9 in Q2 2026 (~$12.2/GB, TweakTown via memory-report.com), still
+//   rising slightly in 2H26 (TrendForce) -> ~$13.4/GB
 // - gddr*: not sold retail, so chip spot prices: GDDR5 8Gb ~$12.3, GDDR6 8Gb
 //   ~$12.5 (DRAMeXchange, TrendForce), GDDR6 index $19.7 (Silicon Data);
 //   GDDR7 3 GB modules reportedly $60-70 (~$20-23/GB, TechPowerUp). No GDDR5X
@@ -545,7 +548,7 @@ for (const img of document.querySelectorAll("img[data-name]")) {
 //   10 : 75 : 25 of the old / mainstream / new generation (sums to 110, so
 //   ~9 / 68 / 23 %): DDR3/4/5 and GDDR5/6/7.
 const EUR_PER_GIB_BY_TYPE = {
-  ddr3: 3, ddr4: 8, ddr5: 18,
+  ddr3: 3, ddr4: 8, ddr5: 18, lpddr5: 12,
   gddr5: 11, gddr5x: 11.5, gddr6: 12.5, gddr6x: 14, gddr7: 19,
 };
 {

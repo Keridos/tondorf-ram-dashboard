@@ -981,7 +981,8 @@ mod tests {
         assert_eq!(type_of("boxvram", r#","memory_type":null"#), "vram");
         // Explicit types win, including over the hostname rule.
         for t in [
-            "system", "vram", "ddr3", "ddr4", "ddr5", "gddr5", "gddr5x", "gddr6", "gddr6x", "gddr7",
+            "system", "vram", "ddr3", "ddr4", "ddr5", "lpddr5", "gddr5", "gddr5x", "gddr6",
+            "gddr6x", "gddr7",
         ] {
             assert_eq!(type_of("box-vram", &format!(r#","memory_type":"{t}""#)), t);
         }
