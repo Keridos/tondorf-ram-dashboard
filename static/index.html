@@ -134,7 +134,7 @@ function ago(iso) {
   return s < 60 ? `${s}s ago` : `${Math.round(s / 60)}m ago`;
 }
 
-// item: {label, color, free, total, tip: [head, ...lines]}; scale: largest total in the column.
+// item: {label, color, free, total, tip: [head, ...lines]}; scale: bytes of a full-width bar.
 function row(item, scale) {
   const li = document.createElement("li");
   li.className = "row";
@@ -230,10 +230,12 @@ function render(dash) {
     ],
   }));
 
-  const fill = (id, items) => {
-    const scale = Math.max(1, ...items.map((i) => i.total));
+  // One scale for both columns (they are equally wide), so a pixel stands for
+  // the same number of bytes on both sides. The largest user total is the
+  // largest value overall: a host never exceeds its user's sum.
+  const scale = Math.max(1, ...userItems.map((u) => u.total));
+  const fill = (id, items) =>
     document.getElementById(id).replaceChildren(...items.map((i) => row(i, scale)));
-  };
   fill("users", userItems);
   fill("hosts", hostItems);
   status(hosts.length ? "" : "No hosts are reporting right now.");
